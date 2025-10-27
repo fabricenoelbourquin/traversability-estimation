@@ -1,4 +1,5 @@
 # global_traversability_prediction
+# traversability-estimation
 
 Pipeline for computing traversability metrics from rosbags and overlaying them on georeferenced maps.
 
@@ -9,3 +10,4 @@ Pipeline for computing traversability metrics from rosbags and overlaying them o
 - `reports/` – figures/artefacts (ignored by git)
 
 Data lives on an external SSD. Code should read a DATA_ROOT (env var) or `config/paths.yaml`.
+
