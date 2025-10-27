@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Project data & outputs (kept out of git)
+data/**
+!data/.gitkeep
+
+reports/**
+!reports/.gitkeep
+
+# Optional: logs/caches anywhere
+**/cache/**
+**/logs/**
+*.parquet
