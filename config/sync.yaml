@@ -1,0 +1,31 @@
+# config/sync.yaml
+resample_hz: 10
+
+align:
+  direction: nearest     # nearest | backward | forward
+  tolerance_ms: 120      # max time gap allowed when matching
+
+interpolate:
+  method: linear         # linear | time (if indexed) | pad
+  limit_seconds: 2.0     # don't bridge longer gaps
+
+lag:
+  cmd_ms: 150            # shift cmd_vel forward to match actuation
+
+smooth:
+  speed_window_s: 0.5    # optional rolling mean for speed columns
+
+columns:                 # optional rename/mapping if extract uses different names
+  cmd:
+    vx: v_cmd_x
+    vy: v_cmd_y
+    wz: w_cmd_z
+  odom:
+    vx: vx
+    vy: vy
+    x:  x
+    y:  y
+  gps:
+    lat: lat
+    lon: lon
+    alt: alt
