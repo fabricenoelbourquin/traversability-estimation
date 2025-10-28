@@ -1,0 +1,99 @@
+"""
+Compute selected metrics on a synced parquet (per mission) and write back.
+
+By default, the script:
+  - locates data/synced/<mission>/synced_<Hz>Hz.parquet (or latest if --hz omitted)
+  - loads config values from:
+      - config/metrics.yaml
+  - appends requested metrics as new columns and writes back to the same parquet
+    (or to --out if provided)
+
+Example usage:
+python src/compute_metrics.py --mission ETH-1 \
+    --hz 10 \
+    --metrics speed_error_abs speed_tracking_score
+"""
+
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, json
+from pathlib import Path
+import re
+import yaml, pandas as pd
+
+# paths helper
+from utils.paths import get_paths
+
+from metrics import compute, REGISTRY
+
+def load_yaml(p: Path) -> dict:
+    return yaml.safe_load(p.read_text()) if p.exists() else {}
+
+def resolve_synced_file(sync_dir: Path, hz: int | None) -> Path:
+    if hz is not None:
+        cand = sync_dir / f"synced_{hz}Hz.parquet"
+        if not cand.exists():
+            raise FileNotFoundError(f"{cand} not found.")
+        return cand
+    # pick the only synced_*.parquet or the latest by mtime
+    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not cands:
+        raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
+    return cands[0]
+
+def resolve_mission_folder(mission: str, P) -> tuple[Path, Path, str]:
+    mj = P["REPO_ROOT"] / "config" / "missions.json"
+    meta = json.loads(mj.read_text())
+    aliases = meta.get("_aliases", {})
+    mission_id = aliases.get(mission, mission)
+    entry = meta.get(mission_id)
+    if not entry:
+        raise KeyError(f"Mission '{mission}' not found in missions.json")
+    folder = entry["folder"]
+    return (P["TABLES"] / folder), (P["SYNCED"] / folder), mission_id
+
+def infer_hz_from_path(p: Path) -> int | None:
+    m = re.search(r"synced_(\d+)Hz\.parquet$", p.name)
+    return int(m.group(1)) if m else None
+
+def main():
+    ap = argparse.ArgumentParser(description="Compute metrics on a synced parquet.")
+    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
+    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    ap.add_argument("--metrics", nargs="*", default=["speed_error_abs", "speed_tracking_score"],
+                    help=f"Metric names to compute. Available: {list(REGISTRY)}")
+    ap.add_argument("--out", default=None, help="Optional output path (default: overwrite input parquet)")
+    args = ap.parse_args()
+
+    P = get_paths()
+    _, sync_dir, mission_id = resolve_mission_folder(args.mission, P)
+    in_parquet = resolve_synced_file(sync_dir, args.hz)
+
+    cfg = load_yaml(P["REPO_ROOT"] / "config" / "metrics.yaml")  # for max_speed_mps, etc.
+
+    # Determine metric names from CLI or config (config wins if CLI left as default)
+    cfg_metrics = cfg.get("metrics", {})
+    cfg_metric_names = cfg_metrics.get("names", [])
+    metric_names = cfg_metric_names if args.metrics == ["speed_error_abs", "speed_tracking_score"] and cfg_metric_names else args.metrics
+
+    # Decide output policy: default separate file unless config says otherwise
+    separate_output = bool(cfg_metrics.get("separate_output", True))
+
+    df = pd.read_parquet(in_parquet)
+    df2 = compute(df, metric_names, cfg)
+
+    # Choose output path
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        if separate_output:
+            hz_val = args.hz if args.hz is not None else (infer_hz_from_path(in_parquet) or 0)
+            out_path = in_parquet.with_name(f"synced_{hz_val}Hz_metrics.parquet")
+        else:
+            out_path = in_parquet  # append to original
+
+    df2.to_parquet(out_path)
+    print(f"[ok] wrote {out_path}")
+
+if __name__ == "__main__":
+    main()
