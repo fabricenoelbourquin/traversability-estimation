@@ -179,7 +179,7 @@ def main():
     args = ap.parse_args()
 
     # Load config
-    cfg_path = Path(args.config) if args.config else (P["REPO_ROOT"] / "config" / "swissimg.yaml")
+    cfg_path = Path(args.config) if args.config else (P["REPO_ROOT"] / "config" / "imagery.yaml")
     cfg = load_yaml(cfg_path)
 
     chip_px = int(args.chip_px or cfg.get("chip_px", 1024))

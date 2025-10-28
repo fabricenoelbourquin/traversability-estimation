@@ -1,0 +1,25 @@
+fetch:
+  chip_px: 1024
+  gsd_m: 0.25
+  wms:
+    url: "https://wms.geo.admin.ch/"
+    layer: "ch.swisstopo.swissimage"
+    version: "1.3.0"
+    format: "image/jpeg"
+    max_px: 10000
+  out:
+    subdir: "swissimg"
+    prefix: ""
+
+embedding:
+  model_id: "facebook/dinov3-vitl16-pretrain-sat493m"
+  stride: 16
+  use_stego: true                  # <— default behavior controlled here
+  default_stego_head: "heads/head.pt"
+
+clustering:
+  default_kmeans:
+    dino:  "kmeans/kmeans_dinoK50_v1.joblib"    # or ".npz"
+    stego: "kmeans/kmeans_stegoK50_v1.joblib"   # or ".npz"
+  save_rgb: true
+  out_subdir: "clusters"
