@@ -1,0 +1,7 @@
+metrics:
+  names:
+    - speed_error_abs
+    - speed_tracking_score
+  separate_output: true 
+params:
+  max_speed_mps: 1
