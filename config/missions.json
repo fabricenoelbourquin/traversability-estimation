@@ -1,0 +1,14 @@
+{
+  "_aliases": {
+    "ETH-1": "e97e35ad-dd7b-49c4-a158-95aba246520e",
+    "SPX-1": "b845fb1b-310c-4236-a33c-c0d2c9a98092"
+  },
+  "e97e35ad-dd7b-49c4-a158-95aba246520e": {
+    "folder": "e97e35ad",
+    "name": "ETH-1"
+  },
+  "b845fb1b-310c-4236-a33c-c0d2c9a98092": {
+    "folder": "b845fb1b",
+    "name": "SPX-1"
+  }
+}

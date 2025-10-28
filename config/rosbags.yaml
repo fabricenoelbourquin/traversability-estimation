@@ -1,0 +1,21 @@
+# config/rosbags.yaml
+defaults:
+  - "*_anymal_command.bag"
+  - "*_anymal_state.bag"
+  - "*_cpt7_ie_tc.bag"
+  - "*_tf_minimal.bag"
+  - "*_anymal_imu.bag"
+  - "*_adis.bag"
+  - "*_stim320_imu.bag"
+
+# keys for --extra
+extras:
+  adis: "adis"                  # expands to "*_adis.bag"
+  locomotion: "anymal_locomotion"
+  vio: "zed2i_vio"
+  dlio: "dlio"
+  ap20: "ap20_prism_position"
+  contacts: "anymal_locomotion"
+  stim: "stim320_imu"
+  stim320: "stim320_imu"
+  anymal_imu: "anymal_imu"

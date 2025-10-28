@@ -1,0 +1,9 @@
+# Change this per machine without touching code:
+data_root: "/Volumes/T7/TRAV_DATA"
+subdirs:
+  raw: "raw"
+  tables: "tables"
+  synced: "synced"
+  maps: "maps"
+  cache: "cache"
+  logs: "logs"
