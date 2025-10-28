@@ -1,0 +1,13 @@
+chip_px: 1024        # square chip size in pixels
+gsd_m: 0.25          # meters per pixel
+
+wms:
+  url: "https://wms.geo.admin.ch/"
+  layer: "ch.swisstopo.swissimage"
+  version: "1.3.0"
+  format: "image/jpeg"
+  max_px: 10000      # tile if any dimension exceeds this
+
+out:
+  subdir: "swissimg" # maps/<mission>/<subdir>/
+  prefix: ""         # optional filename prefix

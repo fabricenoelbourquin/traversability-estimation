@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""
+Fetch a SwissImage RGB basemap chip centered on a mission trajectory,
+reading GPS (lat/lon) from the synced parquet.
+
+Saves:
+  <DATA_ROOT>/maps/<mission_folder>/swissimg/
+    swissimg_chip{chip_px}_gsd{gsd}_rgb8.tif
+    swissimg_chip{chip_px}_gsd{gsd}_rgb8.png
+    swissimg_chip{chip_px}_gsd{gsd}.json  (metadata)
+
+Usage:
+  python src/get_swissimg_patch.py --mission ETH-1
+  python src/get_swissimg_patch.py --mission e97e35ad-... --hz 10
+  # optional overrides:
+  python src/get_swissimg_patch.py --mission ETH-1 --chip-px 2048 --gsd-m 0.25
+"""
+
+from __future__ import annotations
+import argparse, json, math
+from pathlib import Path
+from typing import List, Tuple, Sequence
+
+import numpy as np
+import pandas as pd
+import requests
+import yaml
+from shapely.geometry import LineString
+from shapely.ops import transform as shp_transform
+from pyproj import Transformer
+import rasterio
+from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
+
+# ---- paths helper (your existing one) ----
+
+from utils.paths import get_paths
+
+
+P = get_paths()
+
+# ----------------- helpers -----------------
+def load_yaml(p: Path) -> dict:
+    return yaml.safe_load(p.read_text()) if p.exists() else {}
+
+def resolve_mission(mission: str):
+    """Return (tables_dir, synced_dir, mission_id, short_folder)."""
+    mj = P["REPO_ROOT"] / "config" / "missions.json"
+    meta = json.loads(mj.read_text())
+    mission_id = meta.get("_aliases", {}).get(mission, mission)
+    entry = meta.get(mission_id)
+    if not entry:
+        raise KeyError(f"Mission '{mission}' not found in missions.json")
+    folder = entry["folder"]
+    return (P["TABLES"] / folder, P["SYNCED"] / folder, mission_id, folder)
+
+def pick_synced_parquet(sync_dir: Path, hz: int | None) -> Path:
+    if hz is not None:
+        p = sync_dir / f"synced_{hz}Hz.parquet"
+        if not p.exists():
+            raise FileNotFoundError(f"{p} not found")
+        return p
+    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not cands:
+        raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
+    return cands[0]
+
+def get_ll_points_from_synced(df: pd.DataFrame) -> List[Tuple[float, float]]:
+    """Return list of (lon, lat) from synced parquet, dropping NaNs."""
+    if not {"lat", "lon"}.issubset(df.columns):
+        raise KeyError("Synced parquet has no 'lat'/'lon'. Did GPS make it into sync?")
+    sub = df[["lon", "lat"]].dropna()
+    if len(sub) < 2:
+        raise RuntimeError("Not enough GPS points to build chip center.")
+    # mild decimation if huge (bbox/center only)
+    if len(sub) > 20000:
+        sub = sub.iloc[::10, :]
+    return list(map(tuple, sub.to_numpy(dtype=float)))
+
+# ---- geometry: fixed chip in LV95 ----
+def _to_2056_geom(geom_ll):
+    """Project shapely geometry from EPSG:4326 to EPSG:2056 (LV95)."""
+    to_2056 = Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True).transform
+    return shp_transform(to_2056, geom_ll)
+
+def build_centered_chip_2056(points_ll: Sequence[Tuple[float,float]], chip_px: int, gsd_m: float):
+    """
+    Square chip (EPSG:2056 bounds) centered on the track bbox center.
+    side_m = chip_px * gsd_m
+    """
+    line_ll = LineString(points_ll)
+    line_2056 = _to_2056_geom(line_ll)
+    minx, miny, maxx, maxy = line_2056.bounds
+    cx = 0.5*(minx + maxx); cy = 0.5*(miny + maxy)
+    side_m = chip_px * float(gsd_m)
+    half = side_m / 2.0
+    return (cx - half, cy - half, cx + half, cy + half)
+
+# ---- WMS fetch ----
+def _wms_getmap(bbox_2056, width, height, url, layer, version, fmt):
+    minx, miny, maxx, maxy = bbox_2056
+    params = {
+        "SERVICE": "WMS",
+        "VERSION": version,
+        "REQUEST": "GetMap",
+        "LAYERS":  layer,
+        "STYLES":  "",
+        "CRS":     "EPSG:2056",   # WMS 1.3.0
+        "BBOX":    f"{minx},{miny},{maxx},{maxy}",
+        "WIDTH":   str(int(width)),
+        "HEIGHT":  str(int(height)),
+        "FORMAT":  fmt,
+    }
+    r = requests.get(url, params=params, timeout=60)
+    r.raise_for_status()
+    ctype = r.headers.get("Content-Type", "")
+    if not ctype.startswith("image/"):
+        raise RuntimeError(f"WMS error (not an image):\n{r.text[:600]}")
+    with MemoryFile(r.content) as mem:
+        with mem.open() as ds:
+            arr = ds.read()  # (bands, H, W)
+            if arr.shape[0] == 4:
+                arr = arr[:3]
+            return arr
+
+def _fetch_wms_tiled(bbox_2056, width_px, height_px, url, layer, version, fmt, max_px):
+    W, H = int(width_px), int(height_px)
+    out = np.zeros((3, H, W), dtype=np.uint8)
+    minx, miny, maxx, maxy = map(float, bbox_2056)
+    sx = (maxx - minx) / W
+    sy = (maxy - miny) / H
+    nx = math.ceil(W / max_px)
+    ny = math.ceil(H / max_px)
+    for iy in range(ny):
+        y0 = iy * max_px
+        y1 = min(H, (iy + 1) * max_px)
+        for ix in range(nx):
+            x0 = ix * max_px
+            x1 = min(W, (ix + 1) * max_px)
+            sub_minx = minx + x0 * sx
+            sub_maxx = minx + x1 * sx
+            sub_miny = miny + y0 * sy
+            sub_maxy = miny + y1 * sy
+            tile = _wms_getmap((sub_minx, sub_miny, sub_maxx, sub_maxy),
+                               x1 - x0, y1 - y0, url, layer, version, fmt)
+            out[:, y0:y1, x0:x1] = tile
+    return out
+
+def save_geotiff_rgb8(path: Path, rgb_uint8, bbox_2056):
+    minx, miny, maxx, maxy = bbox_2056
+    H, W = rgb_uint8.shape[1], rgb_uint8.shape[2]
+    transform = from_bounds(minx, miny, maxx, maxy, W, H)
+    with rasterio.open(
+        path, "w",
+        driver="GTiff", width=W, height=H, count=3, dtype="uint8",
+        crs="EPSG:2056", transform=transform,
+        compress="deflate", tiled=True, photometric="RGB"
+    ) as dst:
+        dst.write(rgb_uint8[0], 1)
+        dst.write(rgb_uint8[1], 2)
+        dst.write(rgb_uint8[2], 3)
+
+def save_png_rgb8(path: Path, rgb_uint8):
+    H, W = rgb_uint8.shape[1], rgb_uint8.shape[2]
+    with rasterio.open(path, "w", driver="PNG", width=W, height=H, count=3, dtype="uint8") as dst:
+        dst.write(rgb_uint8[0], 1)
+        dst.write(rgb_uint8[1], 2)
+        dst.write(rgb_uint8[2], 3)
+
+# ----------------- main -----------------
+def main():
+    ap = argparse.ArgumentParser(description="Fetch fixed-chip SwissImage patch for a mission using synced GPS.")
+    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
+    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    ap.add_argument("--config", default=None, help="Path to config/swissimg.yaml (default: repo config)")
+    # optional overrides
+    ap.add_argument("--chip-px", type=int, help="Override chip_px")
+    ap.add_argument("--gsd-m", type=float, help="Override gsd_m")
+    args = ap.parse_args()
+
+    # Load config
+    cfg_path = Path(args.config) if args.config else (P["REPO_ROOT"] / "config" / "swissimg.yaml")
+    cfg = load_yaml(cfg_path)
+
+    chip_px = int(args.chip_px or cfg.get("chip_px", 1024))
+    gsd_m   = float(args.gsd_m   or cfg.get("gsd_m", 0.25))
+
+    wms = cfg.get("wms", {})
+    WMS_URL   = wms.get("url", "https://wms.geo.admin.ch/")
+    WMS_LAYER = wms.get("layer", "ch.swisstopo.swissimage")
+    WMS_VER   = wms.get("version", "1.3.0")
+    WMS_FMT   = wms.get("format", "image/jpeg")
+    MAX_WMS_PX = int(wms.get("max_px", 10000))
+
+    out_cfg = cfg.get("out", {})
+    subdir = out_cfg.get("subdir", "swissimg")
+    prefix = out_cfg.get("prefix", "")
+
+    # Resolve mission + synced parquet
+    _, sync_dir, mission_id, short = resolve_mission(args.mission)
+    synced_path = pick_synced_parquet(sync_dir, args.hz)
+    df = pd.read_parquet(synced_path)
+    pts_ll = get_ll_points_from_synced(df)
+
+    # Build fixed chip in LV95
+    bbox2056 = build_centered_chip_2056(pts_ll, chip_px, gsd_m)
+    width_px = height_px = int(chip_px)
+
+    # Fetch
+    if width_px <= MAX_WMS_PX and height_px <= MAX_WMS_PX:
+        rgb = _wms_getmap(bbox2056, width_px, height_px, WMS_URL, WMS_LAYER, WMS_VER, WMS_FMT)
+    else:
+        rgb = _fetch_wms_tiled(bbox2056, width_px, height_px, WMS_URL, WMS_LAYER, WMS_VER, WMS_FMT, MAX_WMS_PX)
+
+    # Output paths
+    out_dir = (P["MAPS"] / short / subdir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = (prefix or "swissimg") + f"_chip{chip_px}_gsd{gsd_m}"
+    tif_path = out_dir / f"{stem}_rgb8.tif"
+    png_path = out_dir / f"{stem}_rgb8.png"
+
+    save_geotiff_rgb8(tif_path, rgb, bbox2056)
+    save_png_rgb8(png_path, rgb)
+
+    # sidecar meta
+    meta = {
+        "mission_id": mission_id,
+        "folder": short,
+        "chip_px": chip_px,
+        "gsd_m": gsd_m,
+        "bbox_lv95": bbox2056,
+        "crs": "EPSG:2056",
+        "synced": str(synced_path),
+        "tif": str(tif_path),
+        "png": str(png_path),
+        "wms": {"url": WMS_URL, "layer": WMS_LAYER, "version": WMS_VER, "format": WMS_FMT},
+    }
+    (out_dir / f"{stem}.json").write_text(json.dumps(meta, indent=2))
+    print(f"[ok] Saved:\n  {tif_path}\n  {png_path}")
+
+if __name__ == "__main__":
+    main()
