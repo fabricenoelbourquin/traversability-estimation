@@ -14,8 +14,10 @@ fetch:
 embedding:
   model_id: "facebook/dinov3-vitl16-pretrain-sat493m"
   stride: 16
-  use_stego: true                  # <— default behavior controlled here
+  # REQUIRED (one of: "dino", "stego", "both")
+  mode: "both"
   default_stego_head: "heads/head.pt"
+
 
 clustering:
   default_kmeans:
