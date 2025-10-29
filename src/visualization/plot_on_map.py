@@ -13,7 +13,7 @@ the selected cluster RGB PNG, or both side-by-side.
 Usage:
   python src/visualization/plot_on_map.py --mission ETH-1
   python src/visualization/plot_on_map.py --mission ETH-1 --background both --metric speed_tracking_score
-  python src/visualization/plot_on_map.py --mission ETH-1 --background both --emb dino
+  python src/visualization/plot_on_map.py --mission ETH-1 --background both --emb-both
   python src/visualization/plot_on_map.py --mission ETH-1 --hz 10 --clip-percentile 97 --point-size 8 --min-zero
   python src/visualization/plot_on_map.py --mission ETH-1 --kmeans 75 --emb dino --background cluster
 """
@@ -167,6 +167,8 @@ def main():
     ap.add_argument("--point-size", type=float, default=6.0)
     ap.add_argument("--alpha", type=float, default=0.9)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--emb-both", action="store_true",
+                help="Render/save both embeddings (stego and dino) as separate figures.")
     args = ap.parse_args()
 
     # Paths & meta
@@ -174,17 +176,7 @@ def main():
     synced = pick_synced(sync_dir, args.hz)
     tif_path, png_raw = latest_swissimg_paths(short)
 
-    png_cluster = None
-    if args.background in ("cluster", "both"):
-        try:
-            png_cluster = cluster_png_path(short, args.kmeans, args.emb)
-        except FileNotFoundError as e:
-            if args.background == "cluster":
-                raise
-            else:
-                print(f"[warn] {e} — will draw only raw background.")
-
-    # Load metric + GPS
+    # Load metric + GPS once
     df = pd.read_parquet(synced)
     need = {"lat", "lon", args.metric}
     if not need.issubset(df.columns):
@@ -194,68 +186,89 @@ def main():
     lon = df["lon"].to_numpy()
     val = df[args.metric].to_numpy()
 
-    # GPS -> pixel
+    # GPS -> pixel once
     cols, rows, W, H = latlon_to_pixels(lat, lon, tif_path)
     perpix = aggregate_per_pixel(cols, rows, val, W, H)
     vmin, vmax = pick_vmin_vmax(perpix["val"].to_numpy(), args.clip_percentile, args.min_zero)
 
-    # Figure (manual spacing; horizontal colorbar below)
-    ncols = 2 if (args.background == "both" and png_cluster is not None) else 1
-    fig_w = 12 if ncols == 2 else 8
-    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, 7), squeeze=False)  # a bit shorter
-    axes = axes[0]
+    # Decide which embedding(s) to render
+    embeddings_to_render = ["stego", "dino"] if args.emb_both else [args.emb]
 
-    def draw_on(ax, bg_png: Path, title: str):
-        bg = np.asarray(Image.open(bg_png).convert("RGB"))
-        ax.imshow(bg)
-        sc = ax.scatter(perpix["col"], perpix["row"],
-                        c=perpix["val"], s=args.point_size, cmap=args.cmap,
-                        vmin=vmin, vmax=vmax, alpha=args.alpha, linewidths=0)
-        ax.set_xlim([0, bg.shape[1]])
-        ax.set_ylim([bg.shape[0], 0])
-        ax.set_title(title, fontsize=12)
-        ax.axis("off")
-        return sc
+    def draw_one(emb_choice: str):
+        """Render and save a single figure for the given embedding choice."""
+        # Resolve cluster PNG for this embedding if requested
+        png_cluster = None
+        if args.background in ("cluster", "both"):
+            try:
+                png_cluster = cluster_png_path(short, args.kmeans, emb_choice)
+            except FileNotFoundError as e:
+                if args.background == "cluster":
+                    raise
+                else:
+                    print(f"[warn] {e} — will draw only raw background.")
 
-    # Draw backgrounds
-    scatters = []
-    if ncols == 2:
-        scatters.append(draw_on(axes[0], png_raw,     f"{display_name} — SwissImage"))
-        scatters.append(draw_on(axes[1], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {args.emb})"))
-    else:
-        if args.background == "cluster" and png_cluster is not None:
-            scatters.append(draw_on(axes[0], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {args.emb})"))
+        # Figure (manual spacing; horizontal colorbar below)
+        ncols = 2 if (args.background == "both" and png_cluster is not None) else 1
+        fig_w = 12 if ncols == 2 else 8
+        fig, axes = plt.subplots(1, ncols, figsize=(fig_w, 7), squeeze=False)  # a bit shorter
+        axes = axes[0]
+
+        def draw_on(ax, bg_png: Path, title: str):
+            bg = np.asarray(Image.open(bg_png).convert("RGB"))
+            ax.imshow(bg)
+            sc = ax.scatter(perpix["col"], perpix["row"],
+                            c=perpix["val"], s=args.point_size, cmap=args.cmap,
+                            vmin=vmin, vmax=vmax, alpha=args.alpha, linewidths=0)
+            ax.set_xlim([0, bg.shape[1]])
+            ax.set_ylim([bg.shape[0], 0])
+            ax.set_title(title, fontsize=12)
+            ax.axis("off")
+            return sc
+
+        # Draw backgrounds
+        scatters = []
+        if ncols == 2:
+            scatters.append(draw_on(axes[0], png_raw,     f"{display_name} — SwissImage"))
+            scatters.append(draw_on(axes[1], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {emb_choice})"))
         else:
-            scatters.append(draw_on(axes[0], png_raw, f"{display_name} — SwissImage"))
+            if args.background == "cluster" and png_cluster is not None:
+                scatters.append(draw_on(axes[0], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {emb_choice})"))
+            else:
+                scatters.append(draw_on(axes[0], png_raw, f"{display_name} — SwissImage"))
 
-    # Main title (lower and larger)
-    fig.suptitle(f"{display_name} · {args.metric}", y=0.96, fontsize=16, fontweight="bold")
+        # Main title (lower and larger)
+        fig.suptitle(f"{display_name} · {args.metric}", y=0.96, fontsize=16, fontweight="bold")
 
-    # Horizontal colorbar BELOW the images, centered and slightly shorter
-    # - 'ax=axes' tells Matplotlib to place it under the whole row of plots
-    # - 'shrink=0.85' makes it a bit shorter and keeps it centered automatically
-    cbar = fig.colorbar(
-        scatters[0],
-        ax=axes.ravel().tolist(),
-        orientation="horizontal",
-        fraction=0.05,
-        pad=0.15,          # was 0.08 → increase distance
-        shrink=0.85
-    )
-    cbar.set_label(args.metric)
+        # Horizontal colorbar BELOW the images, centered and slightly shorter
+        # - 'ax=axes' tells Matplotlib to place it under the whole row of plots
+        # - 'shrink=0.85' makes it a bit shorter and keeps it centered automatically
+        cbar = fig.colorbar(
+            scatters[0],
+            ax=axes.ravel().tolist(),
+            orientation="horizontal",
+            fraction=0.05,
+            pad=0.15,          # was 0.08 → increase distance
+            shrink=0.85
+        )
+        cbar.set_label(args.metric)
 
-    # Trim extra whitespace around the figure
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.90, bottom=0.18, wspace=0.06)
+        # Trim extra whitespace around the figure
+        fig.subplots_adjust(left=0.04, right=0.98, top=0.90, bottom=0.18, wspace=0.06)
 
-    # Output
-    out_dir_default = P["REPO_ROOT"] / "reports" / short
-    out_dir_default.mkdir(parents=True, exist_ok=True)
-    bg_tag = ("both" if (args.background == "both" and png_cluster is not None)
-              else ("cluster" if (args.background == "cluster" and png_cluster is not None) else "raw"))
-    default_name = f"{short}_{args.metric}_{bg_tag}_k{args.kmeans}_{args.emb}.png"
-    out_path = Path(args.out) if args.out else (out_dir_default / default_name)
-    fig.savefig(out_path, dpi=200)
-    print(f"[ok] saved {out_path}")
+        # Output
+        out_dir_default = P["REPO_ROOT"] / "reports" / short
+        out_dir_default.mkdir(parents=True, exist_ok=True)
+        bg_tag = ("both" if (args.background == "both" and png_cluster is not None)
+                  else ("cluster" if (args.background == "cluster" and png_cluster is not None) else "raw"))
+        default_name = f"{short}_{args.metric}_{bg_tag}_k{args.kmeans}_{emb_choice}.png"
+        out_path = Path(args.out) if args.out else (out_dir_default / default_name)
+        fig.savefig(out_path, dpi=200)
+        print(f"[ok] saved {out_path}")
+
+    # Render each requested embedding
+    for emb_choice in embeddings_to_render:
+        draw_one(emb_choice)
+
 
 if __name__ == "__main__":
     main()
