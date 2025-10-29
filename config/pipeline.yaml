@@ -1,0 +1,9 @@
+visuals:
+  timeseries:
+    enabled: true
+    with_speeds: true
+
+  map:
+    enabled: true
+    background: both      # swissimg | cluster | both
+    emb_both: true
