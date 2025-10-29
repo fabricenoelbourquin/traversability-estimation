@@ -3,10 +3,10 @@
 Debug plot from *unsynced* tables.
 
 Usage (repeat --plot for multiple tables):
-  python src/visualization/plot_unsynced_debug.py \
-    --mission ETH-1 \
-    --plot "cmd_vel:v_cmd_x,v_cmd_y,w_cmd_z" \
-    --plot "odom:vx,vy"
+python src/visualization/plot_unsynced_debug.py \
+--mission ETH-1 \
+--plot "cmd_vel:v_cmd_x,v_cmd_y,w_cmd_z" \
+--plot "odom:vx,vy"
 
 This reads from: data/tables/<mission_folder>/<table>.parquet
 and saves to:   reports/<mission_folder>/unsynced_<table>.png

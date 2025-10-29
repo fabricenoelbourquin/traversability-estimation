@@ -3,7 +3,7 @@
 Overlay a synced metric (default: speed_error_abs) onto the SwissImage chip PNG,
 the selected cluster RGB PNG, or both side-by-side.
 
-- Mission-aware: finds latest synced_<Hz>Hz.parquet, swissimg *_rgb8.tif/.png,
+- Mission-aware: finds latest synced_<Hz>Hz_metrics.parquet, swissimg *_rgb8.tif/.png,
   and (optionally) the cluster PNG named: cluster_kmeans{K}_{emb}_rgb.png
   where K is --kmeans (default 50) and emb ∈ {stego,dino} (default stego).
 - GPS (lat/lon) -> LV95 (EPSG:2056) -> pixel (row/col) via GeoTIFF transform.
@@ -13,6 +13,7 @@ the selected cluster RGB PNG, or both side-by-side.
 Usage:
   python src/visualization/plot_on_map.py --mission ETH-1
   python src/visualization/plot_on_map.py --mission ETH-1 --background both --metric speed_tracking_score
+  python src/visualization/plot_on_map.py --mission ETH-1 --background both --emb dino
   python src/visualization/plot_on_map.py --mission ETH-1 --hz 10 --clip-percentile 97 --point-size 8 --min-zero
   python src/visualization/plot_on_map.py --mission ETH-1 --kmeans 75 --emb dino --background cluster
 """
@@ -40,42 +41,57 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
 
-
 P = get_paths()
 
 # ----------------- helpers -----------------
-def resolve_mission(mission: str) -> Tuple[Path, Path, str, str]:
-    """Return (tables_dir, synced_dir, mission_id, short_folder)."""
+def resolve_mission(mission: str) -> Tuple[Path, Path, str, str, str]:
+    """
+    Return (tables_dir, synced_dir, mission_id, short_folder, display_name).
+
+    display_name preference:
+      1) If the user passed an alias that exists -> that alias
+      2) Else, any alias that maps to this mission_id (first found)
+      3) Else, fall back to the mission's 'folder' (short)
+    """
     mj = P["REPO_ROOT"] / "config" / "missions.json"
     meta = json.loads(mj.read_text())
-    mission_id = meta.get("_aliases", {}).get(mission, mission)
+    alias_map = meta.get("_aliases", {})
+
+    # resolve mission id (allow alias or id)
+    mission_id = alias_map.get(mission, mission)
+
     entry = meta.get(mission_id)
     if not entry:
         raise KeyError(f"Mission '{mission}' not found in missions.json")
+
     short = entry["folder"]
-    return (P["TABLES"] / short, P["SYNCED"] / short, mission_id, short)
+
+    # choose display name as alias if possible
+    if mission in alias_map and alias_map[mission] == mission_id:
+        display = mission
+    else:
+        # find any alias that maps to this id
+        rev = [a for a, mid in alias_map.items() if mid == mission_id]
+        display = rev[0] if len(rev) > 0 else short
+
+    return (P["TABLES"] / short, P["SYNCED"] / short, mission_id, short, display)
 
 def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
     """
     Prefer metrics files:
         synced_{Hz}Hz_metrics.parquet  (if Hz given)
         newest synced_*Hz_metrics.parquet (if Hz not given)
-    Fallback to legacy:
-        synced_{Hz}Hz.parquet or newest synced_*Hz.parquet
     """
-    # 1) Prefer metrics flavor
     if hz is not None:
         p = sync_dir / f"synced_{hz}Hz_metrics.parquet"
         if p.exists():
             return p
-    else:
-        metrics = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"),
-                         key=lambda p: p.stat().st_mtime, reverse=True)
-        if metrics:
-            return metrics[0]
-    raise FileNotFoundError(
-        f"No synced *_metrics parquet or legacy synced_*Hz.parquet found in {sync_dir}"
-    )
+        raise FileNotFoundError(f"{p} not found")
+    metrics = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+    if metrics:
+        return metrics[0]
+    raise FileNotFoundError(f"No synced *_metrics parquet found in {sync_dir}")
 
 def latest_swissimg_paths(short: str) -> Tuple[Path, Path]:
     """Return (tif_path, png_path) for the newest swissimg chip."""
@@ -84,7 +100,6 @@ def latest_swissimg_paths(short: str) -> Tuple[Path, Path]:
     if not tifs:
         raise FileNotFoundError(f"No swissimg *_rgb8.tif in {d}")
     tif = tifs[0]
-    # prefer the PNG with matching stem, otherwise pick newest PNG
     png_candidate = tif.with_suffix(".png")
     if png_candidate.exists():
         png = png_candidate
@@ -141,24 +156,21 @@ def pick_vmin_vmax(vals: np.ndarray, clip_percentile: float, min_zero: bool) -> 
 def main():
     ap = argparse.ArgumentParser(description="Plot a synced metric over SwissImage / cluster PNG(s).")
     ap.add_argument("--mission", required=True, help="Mission alias or UUID")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz_metrics.parquet (default: latest)")
     ap.add_argument("--metric", default="speed_error_abs", help="Metric column in the synced parquet")
-    ap.add_argument("--background", choices=["raw", "cluster", "both"], default="raw",
-                    help="Which background(s) to plot under the trajectory")
-    ap.add_argument("--kmeans", type=int, default=50, help="Cluster count K for background cluster map (default: 50)")
-    ap.add_argument("--emb", choices=["stego","dino"], default="stego",
-                    help="Embedding used for cluster map filename (default: stego)")
-    ap.add_argument("--clip-percentile", type=float, default=95.0, help="Clip colors at this percentile (0..100).")
-    ap.add_argument("--min-zero", action="store_true", help="Force color scale to start at 0.")
-    ap.add_argument("--cmap", default="coolwarm", help="Matplotlib colormap (blue→red default: coolwarm).")
-    ap.add_argument("--point-size", type=float, default=6.0, help="Marker size in pixels.")
-    ap.add_argument("--alpha", type=float, default=0.9, help="Marker alpha.")
-    ap.add_argument("--out", default=None,
-                    help="Output path (default: reports/<mission>/<metric>_<bg>_k{K}_{emb}.png)")
+    ap.add_argument("--background", choices=["raw", "cluster", "both"], default="raw")
+    ap.add_argument("--kmeans", type=int, default=50)
+    ap.add_argument("--emb", choices=["stego","dino"], default="stego")
+    ap.add_argument("--clip-percentile", type=float, default=95.0)
+    ap.add_argument("--min-zero", action="store_true")
+    ap.add_argument("--cmap", default="coolwarm")
+    ap.add_argument("--point-size", type=float, default=6.0)
+    ap.add_argument("--alpha", type=float, default=0.9)
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    # Paths
-    _, sync_dir, mission_id, short = resolve_mission(args.mission)
+    # Paths & meta
+    _, sync_dir, mission_id, short, display_name = resolve_mission(args.mission)
     synced = pick_synced(sync_dir, args.hz)
     tif_path, png_raw = latest_swissimg_paths(short)
 
@@ -174,23 +186,23 @@ def main():
 
     # Load metric + GPS
     df = pd.read_parquet(synced)
-    if not {"lat", "lon", args.metric}.issubset(df.columns):
-        missing = {"lat", "lon", args.metric} - set(df.columns)
-        raise KeyError(f"Synced parquet missing columns: {missing}")
+    need = {"lat", "lon", args.metric}
+    if not need.issubset(df.columns):
+        raise KeyError(f"Synced parquet missing columns: {need - set(df.columns)}")
 
     lat = df["lat"].to_numpy()
     lon = df["lon"].to_numpy()
     val = df[args.metric].to_numpy()
 
-    # Map GPS -> pixel using GeoTIFF georeference
+    # GPS -> pixel
     cols, rows, W, H = latlon_to_pixels(lat, lon, tif_path)
     perpix = aggregate_per_pixel(cols, rows, val, W, H)
     vmin, vmax = pick_vmin_vmax(perpix["val"].to_numpy(), args.clip_percentile, args.min_zero)
 
-    # Prepare figure
+    # Figure (manual spacing; horizontal colorbar below)
     ncols = 2 if (args.background == "both" and png_cluster is not None) else 1
     fig_w = 12 if ncols == 2 else 8
-    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, 8), squeeze=False)
+    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, 7), squeeze=False)  # a bit shorter
     axes = axes[0]
 
     def draw_on(ax, bg_png: Path, title: str):
@@ -200,30 +212,42 @@ def main():
                         c=perpix["val"], s=args.point_size, cmap=args.cmap,
                         vmin=vmin, vmax=vmax, alpha=args.alpha, linewidths=0)
         ax.set_xlim([0, bg.shape[1]])
-        ax.set_ylim([bg.shape[0], 0])  # invert y to match image coords
-        ax.set_title(title, fontsize=11)
+        ax.set_ylim([bg.shape[0], 0])
+        ax.set_title(title, fontsize=12)
         ax.axis("off")
         return sc
 
     # Draw backgrounds
     scatters = []
     if ncols == 2:
-        scatters.append(draw_on(axes[0], png_raw, f"{short} — SwissImage"))
-        scatters.append(draw_on(axes[1], png_cluster, f"{short} — Clusters (k={args.kmeans}, {args.emb})"))
+        scatters.append(draw_on(axes[0], png_raw,     f"{display_name} — SwissImage"))
+        scatters.append(draw_on(axes[1], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {args.emb})"))
     else:
         if args.background == "cluster" and png_cluster is not None:
-            scatters.append(draw_on(axes[0], png_cluster, f"{short} — Clusters (k={args.kmeans}, {args.emb})"))
+            scatters.append(draw_on(axes[0], png_cluster, f"{display_name} — Clusters (k={args.kmeans}, {args.emb})"))
         else:
-            scatters.append(draw_on(axes[0], png_raw, f"{short} — SwissImage"))
+            scatters.append(draw_on(axes[0], png_raw, f"{display_name} — SwissImage"))
 
-    # Single shared colorbar
-    cbar = fig.colorbar(scatters[0], ax=axes, fraction=0.025, pad=0.02)
+    # Main title (lower and larger)
+    fig.suptitle(f"{display_name} · {args.metric}", y=0.96, fontsize=16, fontweight="bold")
+
+    # Horizontal colorbar BELOW the images, centered and slightly shorter
+    # - 'ax=axes' tells Matplotlib to place it under the whole row of plots
+    # - 'shrink=0.85' makes it a bit shorter and keeps it centered automatically
+    cbar = fig.colorbar(
+        scatters[0],
+        ax=axes.ravel().tolist(),
+        orientation="horizontal",
+        fraction=0.05,
+        pad=0.15,          # was 0.08 → increase distance
+        shrink=0.85
+    )
     cbar.set_label(args.metric)
 
-    fig.suptitle(f"{mission_id} · metric: {args.metric}", y=0.995, fontsize=10)
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    # Trim extra whitespace around the figure
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.90, bottom=0.18, wspace=0.06)
 
-    # Output -> repo-local reports, not data
+    # Output
     out_dir_default = P["REPO_ROOT"] / "reports" / short
     out_dir_default.mkdir(parents=True, exist_ok=True)
     bg_tag = ("both" if (args.background == "both" and png_cluster is not None)
