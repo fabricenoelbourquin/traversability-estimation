@@ -256,11 +256,11 @@ def main():
         fig.subplots_adjust(left=0.04, right=0.98, top=0.90, bottom=0.18, wspace=0.06)
 
         # Output
-        out_dir_default = P["REPO_ROOT"] / "reports" / short
+        out_dir_default = P["REPO_ROOT"] / "reports" / display_name
         out_dir_default.mkdir(parents=True, exist_ok=True)
         bg_tag = ("both" if (args.background == "both" and png_cluster is not None)
                   else ("cluster" if (args.background == "cluster" and png_cluster is not None) else "raw"))
-        default_name = f"{short}_{args.metric}_{bg_tag}_k{args.kmeans}_{emb_choice}.png"
+        default_name = f"{display_name}_{args.metric}_{bg_tag}_k{args.kmeans}_{emb_choice}.png"
         out_path = Path(args.out) if args.out else (out_dir_default / default_name)
         fig.savefig(out_path, dpi=200)
         print(f"[ok] saved {out_path}")
