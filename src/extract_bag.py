@@ -3,10 +3,10 @@
 Extract key signals from a mission's rosbags -> Parquet tables.
 
 Examples:
-  python src/extract_bag.py --mission Heap_1
+  python src/extract_bag.py --mission HEAP-1
   python src/extract_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e
   # Overwrite existing Parquet:
-  python src/extract_bag.py --mission Heap_1 --overwrite
+  python src/extract_bag.py --mission HEAP-1 --overwrite
 """
 
 from __future__ import annotations
