@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """
-Infer a cluster map over a SwissImage chip using DINOv3 (+ optional STEGO head)
-and a pre-fitted KMeans/MiniBatchKMeans (joblib or npz).
-
-Default behavior is controlled by config:
-  embedding.use_stego: true|false (default true)
-
-Override from CLI:
-  --use-stego true|false
+Infer a cluster map over a SwissImage chip using DINOv3 and pre-fitted KMeans.
+Modes:
+  - dino:  assign directly on DINO features
+  - stego: project DINO features through STEGO head, then assign
+  - both:  do both in one run (single DINO forward)
 
 Outputs:
-  - <base>_<dino|stego>K<labels>.tif/.png (uint16 labels, tif keeps georef)
-  - <base>_<dino|stego>K<labels>_rgb.png  (optional color preview)
+  - cluster_kmeans<K>_dino.tif/.png and/or cluster_kmeans<K>_stego.tif/.png
+  - *_rgb.png previews if enabled
 
 Example Use:
 python src/infer_cluster_map.py --mission ETH-1
-python src/infer_cluster_map.py --mission ETH-1 --use-stego false
 """
 
 from __future__ import annotations
@@ -246,28 +242,11 @@ def load_kmeans_any(path: Path):
 
 # ---------- core ----------
 @torch.no_grad()
-def infer_labels(rgb8: np.ndarray,
-                 processor: AutoImageProcessor,
-                 dino_model: AutoModel,
-                 kmeans_model,
-                 device: str,
-                 stride: int,
-                 stego_head: Optional[nn.Module]) -> np.ndarray:
-    feat = dinov3_patch_features(rgb8, dino_model, processor, device, stride)  # (hf, wf, C)
-    Hf, Wf, C = feat.shape
-
-    if stego_head is not None:
-        X = torch.from_numpy(feat).reshape(-1, C).to(device)
-        Y = stego_head(X)
-        Y = F.normalize(Y, dim=-1)
-        Z = Y.cpu().numpy().reshape(Hf, Wf, -1)
-    else:
-        Z = feat
-
-    H, W = rgb8.shape[:2]
-    Fsmall = torch.from_numpy(Z).permute(2,0,1).unsqueeze(0).to(device)     # [1,D,hf,wf]
+def assign_labels_from_feats(Z: np.ndarray, kmeans_model, device: str, out_hw: tuple[int,int]) -> np.ndarray:
+    H, W = out_hw
+    Fsmall = torch.from_numpy(Z).permute(2,0,1).unsqueeze(0).to(device)   # [1,D,hf,wf]
     Fhi = F.interpolate(Fsmall, size=(H, W), mode="bilinear", align_corners=False)
-    Fhi = F.normalize(Fhi, dim=1).squeeze(0).permute(1,2,0).contiguous()    # [H,W,D]
+    Fhi = F.normalize(Fhi, dim=1).squeeze(0).permute(1,2,0).contiguous()  # [H,W,D]
 
     centers = np.asarray(getattr(kmeans_model, "cluster_centers_", None), dtype=np.float32)
     if centers is None:
@@ -322,14 +301,20 @@ def main():
     ap.add_argument("--config", default=None, help="Path to config/imagery.yaml (default: repo config)")
     ap.add_argument("--model-id", default="", help="HuggingFace model id override (else from config)")
     ap.add_argument("--device", default="auto", choices=["auto","cuda","mps","cpu"])
-    # single override flag (optional): default None -> follow config
-    ap.add_argument("--use-stego", type=str2bool, default=None, help="Override config: true|false")
+
+    # mode selector
+    ap.add_argument("--mode", choices=["dino","stego","both"], default=None,
+                    help="Override embedding.mode; 'both' runs DINO once and branches.")
+
     # model path overrides (optional)
-    ap.add_argument("--kmeans-model", default="", help="Relative to DATA_ROOT/models or absolute. If empty, use config.clustering.default_kmeans.(stego|dino).")
-    ap.add_argument("--stego-head",   default="", help="Relative to DATA_ROOT/models or absolute. If empty and use_stego, use config.embedding.default_stego_head.")
+    ap.add_argument("--kmeans-dino",  default="", help="Override DINO KMeans path (used when mode=dino/both).")
+    ap.add_argument("--kmeans-stego", default="", help="Override STEGO KMeans path (used when mode=stego/both).")
+    ap.add_argument("--stego-head",   default="", help="Override STEGO head (used when mode=stego/both).")
+
     # output
     ap.add_argument("--save-rgb", action="store_true", help="Force saving color PNG (overrides config).")
     ap.add_argument("--out-subdir", default="", help="Override output subdir (default from config).")
+
     args = ap.parse_args()
 
     if not args.mission and not args.input:
@@ -341,16 +326,20 @@ def main():
     emb = cfg.get("embedding", {}) or {}
     clu = cfg.get("clustering", {}) or {}
 
-    stride    = int(emb.get("stride", 16))
-    model_id  = args.model_id or emb.get("model_id", "facebook/dinov3-vitl16-pretrain-sat493m")
-    cfg_use_stego = emb.get("use_stego", True)
-    use_stego = cfg_use_stego if args.use_stego is None else args.use_stego
+    stride   = int(emb.get("stride", 16))
+    model_id = args.model_id or emb.get("model_id", "facebook/dinov3-vitl16-pretrain-sat493m")
 
-    defaults = (clu.get("default_kmeans") or {})
+    # REQUIRED in cfg or via CLI
+    cfg_mode = emb.get("mode", None)
+    if cfg_mode is None and args.mode is None:
+        raise SystemExit("[error] embedding.mode must be set in config or overridden via --mode (dino|stego|both).")
+    mode = args.mode or cfg_mode  # final mode: "dino" | "stego" | "both"
+
+    defaults  = (clu.get("default_kmeans") or {})
     out_subdir = args.out_subdir or clu.get("out_subdir", "clusters")
     save_rgb   = args.save_rgb or bool(clu.get("save_rgb", True))
 
-    # resolve mission / input
+    # resolve mission/input (unchanged)
     out_dir, input_path, mission_id, short = resolve_mission_and_input(args.mission, args.input, out_subdir)
 
     # device + models
@@ -359,49 +348,75 @@ def main():
     processor  = AutoImageProcessor.from_pretrained(model_id)
     dino_model = AutoModel.from_pretrained(model_id).to(device).eval()
 
-    # choose KMeans + optional STEGO head
-    if use_stego:
-        km_rel = args.kmeans_model or defaults.get("stego", "")
-        if not km_rel:
-            raise SystemExit("[error] No STEGO kmeans provided. Set clustering.default_kmeans.stego or pass --kmeans-model.")
-        kmeans_path = resolve_under_models(km_rel)
+    # resolve model paths per mode
+    kmeans_path_dino  = None
+    kmeans_path_stego = None
+    stego_head        = None
+
+    if mode in ("dino", "both"):
+        km_rel_d = args.kmeans_dino or defaults.get("dino", "")
+        if not km_rel_d:
+            raise SystemExit("[error] Set clustering.default_kmeans.dino or pass --kmeans-dino.")
+        kmeans_path_dino = resolve_under_models(km_rel_d)
+
+    if mode in ("stego", "both"):
+        km_rel_s = args.kmeans_stego or defaults.get("stego", "")
+        if not km_rel_s:
+            raise SystemExit("[error] Set clustering.default_kmeans.stego or pass --kmeans-stego.")
+        kmeans_path_stego = resolve_under_models(km_rel_s)
 
         sh_rel = args.stego_head or emb.get("default_stego_head", "")
         if not sh_rel:
-            raise SystemExit("[error] use_stego=true requires a STEGO head. Set embedding.default_stego_head or pass --stego-head.")
+            raise SystemExit("[error] mode includes STEGO but no head provided. Set embedding.default_stego_head or pass --stego-head.")
         stego_head_path = resolve_under_models(sh_rel)
         stego_head = load_stego_head(stego_head_path, device)
-    else:
-        km_rel = args.kmeans_model or defaults.get("dino", "")
-        if not km_rel:
-            raise SystemExit("[error] No DINO kmeans provided. Set clustering.default_kmeans.dino or pass --kmeans-model.")
-        kmeans_path = resolve_under_models(km_rel)
-        stego_head = None
 
-    kmeans_model = load_kmeans_any(kmeans_path)
+    # load KMeans models
+    kmeans_dino  = load_kmeans_any(kmeans_path_dino)  if kmeans_path_dino  else None
+    kmeans_stego = load_kmeans_any(kmeans_path_stego) if kmeans_path_stego else None
 
-    # run
     rgb8, ref_ds, _ = load_image_from_path(input_path, stride=stride)
-    labels = infer_labels(rgb8, processor, dino_model, kmeans_model, device, stride, stego_head)
+    H, W = rgb8.shape[:2]
 
-    # outputs
+    # one DINO pass
+    feat = dinov3_patch_features(rgb8, dino_model, processor, device, stride)  # (hf, wf, C), L2-normalized
+
+    written_paths = []
+    palette_cache = {}
+
     def _out_basename(k: int, tag: str) -> str:
         return f"cluster_kmeans{k}_{tag}"
 
-    K = getattr(kmeans_model, "n_clusters", len(getattr(kmeans_model, "cluster_centers_", [])) or 0)
-    tag = "stego" if use_stego else "dino"
-    out_base = out_dir / _out_basename(K, tag)
+    if mode in ("dino", "both"):
+        labels_d = assign_labels_from_feats(feat, kmeans_dino, device, (H, W))
+        Kd = getattr(kmeans_dino, "n_clusters", len(getattr(kmeans_dino, "cluster_centers_", [])) or 0)
+        base_d = out_dir / _out_basename(Kd, "dino")
+        lab_p_d = write_uint16_label_map(base_d, labels_d, ref_ds); written_paths.append(lab_p_d)
+        if save_rgb:
+            palette = palette_cache.setdefault(Kd, make_palette(Kd if Kd else 100))
+            rgb_p_d = save_color_png(base_d, labels_d, palette); written_paths.append(rgb_p_d)
 
-    lab_path = write_uint16_label_map(out_base, labels, ref_ds)
-    print("[ok] wrote", lab_path)
+    if mode in ("stego", "both"):
+        hf, wf, C = feat.shape
+        X = torch.from_numpy(feat).reshape(-1, C).to(device)
+        with torch.no_grad():
+            Y = stego_head(X)
+            Y = F.normalize(Y, dim=-1)
+        Z = Y.detach().cpu().numpy().reshape(hf, wf, -1)
+        labels_s = assign_labels_from_feats(Z, kmeans_stego, device, (H, W))
+        Ks = getattr(kmeans_stego, "n_clusters", len(getattr(kmeans_stego, "cluster_centers_", [])) or 0)
+        base_s = out_dir / _out_basename(Ks, "stego")
+        lab_p_s = write_uint16_label_map(base_s, labels_s, ref_ds); written_paths.append(lab_p_s)
+        if save_rgb:
+            palette = palette_cache.setdefault(Ks, make_palette(Ks if Ks else 100))
+            rgb_p_s = save_color_png(base_s, labels_s, palette); written_paths.append(rgb_p_s)
 
-    if save_rgb:
-        palette = make_palette(K if K else 100)
-        rgb_path = save_color_png(out_base, labels, palette)
-        print("[ok] wrote", rgb_path)
+    for p in written_paths:
+        print("[ok] wrote", p)
 
     if ref_ds is not None:
         ref_ds.close()
+
 
 if __name__ == "__main__":
     main()
