@@ -78,7 +78,13 @@ def resolve_mission_folder(mission: str) -> Path:
     tables_dir = P["TABLES"] / folder
     if not tables_dir.exists():
         raise FileNotFoundError(f"{tables_dir} not found. Did you run extract?")
-    return tables_dir, (P["SYNCED"] / folder), mission_id
+    # pick display name
+    if mission in aliases and aliases[mission] == mission_id:
+        display_name = mission
+    else:
+        rev = [a for a, mid in aliases.items() if mid == mission_id]
+        display_name = rev[0] if rev else folder
+    return tables_dir, (P["SYNCED"] / folder), mission_id, display_name
 
 def load_df(path: Path) -> Optional[pd.DataFrame]:
     """
@@ -234,7 +240,7 @@ def main():
     smooth_win_s = float(sync_cfg.get("smooth", {}).get("speed_window_s", 0.0))
 
     # Resolve mission -> tables dir, output dir, canonical mission_id
-    tables_dir, out_dir, mission_id = resolve_mission_folder(args.mission)
+    tables_dir, out_dir, mission_id, display_name = resolve_mission_folder(args.mission)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load available tables
@@ -319,10 +325,10 @@ def main():
 
             # Put plots under reports/<mission_folder>/
             mission_folder = out_dir.name  # e.g., the same folder under SYNCED/
-            rep = P["REPO_ROOT"] / "reports" / mission_folder
+            rep = P["REPO_ROOT"] / "reports" / display_name
             rep.mkdir(parents=True, exist_ok=True)
-
-            f = rep / f"{mission_id.split('-')[0]}_sync_qc.png"
+            short_id = mission_id.split("-")[0]
+            f = rep / f"{display_name}_{short_id}_sync_qc.png"
             plt.savefig(f, dpi=160)
             print(f"[ok] plot: {f}")
         except Exception as e:

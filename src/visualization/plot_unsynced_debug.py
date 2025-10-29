@@ -49,12 +49,19 @@ def parse_specs(specs: List[str]) -> Dict[str, List[str]]:
 def resolve_mission(mission: str, P) -> Tuple[Path, Path, str, str]:
     mj = P["REPO_ROOT"] / "config" / "missions.json"
     meta = json.loads(mj.read_text())
-    mission_id = meta.get("_aliases", {}).get(mission, mission)
+    alias_map = meta.get("_aliases", {})
+    mission_id = alias_map.get(mission, mission)
     entry = meta.get(mission_id)
     if not entry:
         raise KeyError(f"Mission '{mission}' not found in missions.json")
-    folder = entry["folder"]
-    return (P["TABLES"] / folder), (P["SYNCED"] / folder), mission_id, folder
+    short = entry["folder"]
+    if mission in alias_map and alias_map[mission] == mission_id:
+        display = mission
+    else:
+        rev = [a for a, mid in alias_map.items() if mid == mission_id]
+        display = rev[0] if rev else short
+
+    return (P["TABLES"] / short), (P["SYNCED"] / short), mission_id, short, display
 
 def main():
     ap = argparse.ArgumentParser(description="Plot raw (unsynced) tables for debugging.")
@@ -64,10 +71,10 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    tables_dir, _, mission_id, short = resolve_mission(args.mission, P)
+    tables_dir, _, mission_id, short, display_name = resolve_mission(args.mission, P)
     specs = parse_specs(args.plot)
 
-    out_base = P["REPO_ROOT"] / "reports" / short
+    out_base = P["REPO_ROOT"] / "reports" / display_name
     out_base.mkdir(parents=True, exist_ok=True)
 
     for table, cols in specs.items():
@@ -128,7 +135,7 @@ def main():
 
 
         axes[-1].set_xlabel("time [s]")
-        fig.suptitle(f"{mission_id} — {short} — {table}.parquet", y=0.995, fontsize=11)
+        fig.suptitle(f"{display_name} — {mission_id} — {table}.parquet", ...)
         fig.tight_layout(rect=[0, 0, 1, 0.98])
 
         out_path = out_base / f"unsynced_{table}.png"

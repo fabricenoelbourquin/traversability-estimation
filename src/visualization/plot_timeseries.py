@@ -63,12 +63,18 @@ def _resolve_mission(mission: str, P) -> tuple[Path, Path, str, str]:
     if not mj.exists():
         raise FileNotFoundError(f"{mj} not found.")
     meta = json.loads(mj.read_text())
-    mission_id = meta.get("_aliases", {}).get(mission, mission)
+    alias_map = meta.get("_aliases", {})
+    mission_id = alias_map.get(mission, mission)
     entry = meta.get(mission_id)
     if not entry:
         raise KeyError(f"Mission '{mission}' not found in missions.json")
-    folder = entry["folder"]
-    return (P["TABLES"] / folder), (P["SYNCED"] / folder), mission_id, folder
+    short = entry["folder"]
+    if mission in alias_map and alias_map[mission] == mission_id:
+        display = mission
+    else:
+        rev = [a for a, mid in alias_map.items() if mid == mission_id]
+        display = rev[0] if rev else short
+    return (P["TABLES"] / short), (P["SYNCED"] / short), mission_id, short, display
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
     # If Hz specified, try metrics file first
@@ -132,7 +138,7 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    _, sync_dir, mission_id, short = _resolve_mission(args.mission, P)
+    _, sync_dir, mission_id, short, display_name = _resolve_mission(args.mission, P)
     synced_path = _pick_synced(sync_dir, args.hz)
 
     df = pd.read_parquet(synced_path)
@@ -195,13 +201,13 @@ def main():
         ax_i += 1
 
     axes[-1].set_xlabel("time [s]")
-    fig.suptitle(f"{mission_id} — {short}", y=0.995, fontsize=11)
+    fig.suptitle(f"{display_name} — {mission_id}", y=0.995, fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
 
     # Save under reports/<mission_folder>/
-    out_dir = P["REPO_ROOT"] / "reports" / short
+    out_dir = P["REPO_ROOT"] / "reports" / display_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(args.out) if args.out else (out_dir / f"{short}_timeseries.png")
+    out_path = Path(args.out) if args.out else (out_dir / f"{display_name}_timeseries.png")
     fig.savefig(out_path, dpi=160)
     print(f"[ok] saved {out_path}")
 
