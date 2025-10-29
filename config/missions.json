@@ -2,7 +2,8 @@
   "_aliases": {
     "ETH-1": "e97e35ad-dd7b-49c4-a158-95aba246520e",
     "SPX-1": "b845fb1b-310c-4236-a33c-c0d2c9a98092",
-    "HEAP-1": "512edee1-de86-463f-bdda-f55362e2fda1"
+    "HEAP-1": "512edee1-de86-463f-bdda-f55362e2fda1",
+    "PIL-2": "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb"
   },
   "e97e35ad-dd7b-49c4-a158-95aba246520e": {
     "folder": "e97e35ad",
@@ -15,5 +16,9 @@
   "512edee1-de86-463f-bdda-f55362e2fda1": {
     "folder": "512edee1",
     "name": "HEAP-1"
+  },
+  "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb": {
+    "folder": "8a90fb38",
+    "name": "PIL-2"
   }
 }
