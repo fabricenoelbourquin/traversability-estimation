@@ -4,13 +4,13 @@ Download selected rosbags for a mission into data/raw/<mission_folder>/.
 
 Arguments:
 --mission-id: required, Mission UUID
---mission-name: optional, Optional alias (e.g., Heap_1)
+--mission-name: optional, Optional alias (e.g., HEAP-1)
 --extra: optional, Extra bag kinds to include (e.g., adis locomotion dlio)
 --dry-run: optional, Print commands, do not download
 
 Examples:
   python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e
-  python src/download_bag.py --mission-id e97e35ad-... --mission-name Heap_1
+  python src/download_bag.py --mission-id e97e35ad-... --mission-name ETH-1
   python src/download_bag.py --mission-id ... --extra adis locomotion dlio --dry-run
   python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e --mission-name ETH-1 --dry-run 
 """
@@ -19,17 +19,23 @@ from __future__ import annotations
 import argparse, json, os, re, shlex, subprocess, sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
+from argparse import BooleanOptionalAction
 
 # --- paths helper ---
 from utils.paths import get_paths
 
 # Try to import YAML (PyYAML). If unavailable we'll use hardcoded fallbacks.
-import yaml
+try:
+    import yaml  # type: ignore
+except ImportError:  # hard-fail since YAML is required now
+    print("[error] PyYAML not installed. Please `pip install pyyaml`.", file=sys.stderr)
+    sys.exit(2)
 
 
 P = get_paths()  # expects keys RAW, REPO_ROOT, (optionally) MISSIONS_JSON
 
 BAG_SUFFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_(.+)\.bag$")
+EXIT_NO_GPS = 20
 
 def repo_root() -> Path:
     # If helper didn’t provide it, infer from this file
@@ -47,7 +53,7 @@ def rosbags_yaml_path() -> Path:
     """
     return Path(P.get("ROSBAGS_YAML", repo_root() / "config" / "rosbags.yaml"))
 
-def _read_rosbags_yaml() -> Optional[dict]:
+def _read_rosbags_yaml() -> dict:
     """
     Load rosbags.yaml safely.
     Returns dict with keys:
@@ -57,26 +63,28 @@ def _read_rosbags_yaml() -> Optional[dict]:
     """
     path = rosbags_yaml_path()
     if not path.exists():
-        return None
-    if yaml is None:
-        print(f"[warn] PyYAML not installed; ignoring {path}. Using built-in defaults.", file=sys.stderr)
-        return None
-    try:
-        cfg = yaml.safe_load(path.read_text()) or {}
-        # Normalize shapes
-        defaults = cfg.get("defaults", [])
-        extras = cfg.get("extras", {})
-        if not isinstance(defaults, list):
-            print(f"[warn] 'defaults' in {path} must be a list; ignoring file.", file=sys.stderr)
-            return None
-        if not isinstance(extras, dict):
-            extras = {}
-        return {"defaults": defaults, "extras": extras}
-    except Exception as e:
-        print(f"[warn] Could not parse {path}: {e}. Using built-in defaults.", file=sys.stderr)
-        return None
+        print(f"[error] Required YAML not found: {path}", file=sys.stderr)
+        sys.exit(2)
 
-def _read_missions_json() -> Dict[str, dict]:
+    try:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"[error] Could not parse {path}: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    defaults = cfg.get("defaults", [])
+    extras = cfg.get("extras", {})
+
+    if not isinstance(defaults, list):
+        print(f"[error] 'defaults' in {path} must be a list of glob patterns.", file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(extras, dict):
+        print(f"[error] 'extras' in {path} must be a mapping (alias -> pattern|suffix).", file=sys.stderr)
+        sys.exit(2)
+
+    return {"defaults": defaults, "extras": extras}
+
+def _read_missions_json() -> dict[str, dict]:
     """Load missions.json safely; return {} on any parse/missing error."""
     mj = missions_json_path()
     if not mj.exists():
@@ -87,7 +95,7 @@ def _read_missions_json() -> Dict[str, dict]:
         print(f"[warn] Could not parse {mj}; treating as empty.", file=sys.stderr)
         return {}
 
-def short_folder_from_uuid(mission_id: str, dest_root: Path) -> Tuple[str, Path]:
+def short_folder_from_uuid(mission_id: str, dest_root: Path) -> tuple[str, Path]:
     """
     Use the first part of mission id for subfolder name, but:
     - If missions.json already has an entry for this mission_id, reuse its folder.
@@ -123,63 +131,32 @@ def short_folder_from_uuid(mission_id: str, dest_root: Path) -> Tuple[str, Path]
     # Otherwise we can safely use the short folder (even if it already exists on disk)
     return short, dest_root / short
 
-def run(cmd: List[str]) -> subprocess.CompletedProcess:
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
     print("[cmd]", " ".join(shlex.quote(c) for c in cmd))
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 # --- pattern mode (skip listing; server resolves globs) ---
-def make_patterns_for_defaults(extras: List[str]) -> List[str]:
+def make_patterns_for_defaults(extras: list[str]) -> list[str]:
     """
-    Create glob patterns for the default set and any extras.
-    Examples: '*_anymal_command.bag', '*_cpt7_ie_{tc,rt}.bag', '*_tf_minimal.bag'
+    Create glob patterns from YAML defaults + requested extras.
+    - defaults: already glob patterns
+    - extras: alias -> either a glob or a bare suffix (we expand to '*_<suffix>.bag')
     """
-    pats: List[str] = []
-
-    # If YAML provided, use it; otherwise use the previous built-in defaults.
     cfg = _read_rosbags_yaml()
+    pats: list[str] = list(cfg["defaults"])
 
-    if cfg is not None:
-        # YAML-driven: defaults are full patterns already.
-        defaults = cfg.get("defaults", [])
-        pats += defaults
+    yaml_extras: dict[str, str] = cfg["extras"]
+    for ex in extras:
+        key = ex.lower()
+        val = yaml_extras.get(key, key)  # allow raw suffix as a convenience
+        pats.append(val if ("*" in val or "?" in val) else f"*_{val}.bag")
 
-        # Extras mapping (alias -> bare suffix or full pattern). We treat a
-        # value as either a bare suffix "dlio" (we’ll expand to '*_dlio.bag')
-        # or already a glob pattern (contains '*' or '?').
-        yaml_extras: Dict[str, str] = cfg.get("extras", {})
-        for ex in extras:
-            key = ex.lower()
-            val = yaml_extras.get(key)
-            if not val:
-                # allow raw suffix too if user typed something not in map
-                val = key
-            if "*" in val or "?" in val:
-                pats.append(val)
-            else:
-                pats.append(f"*_{val}.bag")
-    else:
-        # Built-in fallback (preserves your current behavior)
-        # Core command/state
-        pats += ["*_anymal_command.bag", "*_anymal_state.bag"]
-
-        # GPS/TF
-        pats += ["*_cpt7_ie_tc.bag", "*_cpt7_ie_rt.bag", "*_tf_minimal.bag"]
-
-        # IMU preference chain – ask for all; server returns those that exist
-        pats += ["*_anymal_imu.bag", "*_adis.bag", "*_stim320_imu.bag"]
-
-        # Extras mapping (reuse EXTRA_MAP)
-        for ex in extras:
-            key = ex.lower()
-            suf = EXTRA_MAP.get(key, key)  # allow raw suffix too
-            pats.append(f"*_{suf}.bag")
-
-    # Deduplicate while preserving order
-    seen = set()
-    out: List[str] = []
+    # de-duplicate preserve order
+    seen, out = set(), []
     for p in pats:
         if p not in seen:
-            seen.add(p); out.append(p)
+            seen.add(p)
+            out.append(p)
     return out
 
 def ensure_dirs(path: Path) -> None:
@@ -194,12 +171,11 @@ def update_missions_json(
     mission_id: str,
     folder: str,
     mission_name: str | None,
-    bags: List[str] | None,
 ) -> None:
     mj = missions_json_path()
     mj.parent.mkdir(parents=True, exist_ok=True)
 
-    cur: Dict[str, dict] = {}
+    cur: dict[str, dict] = {}
     if mj.exists():
         try:
             cur = json.loads(mj.read_text())
@@ -209,18 +185,6 @@ def update_missions_json(
 
     entry = cur.get(mission_id, {})
     entry.update({"folder": folder, "name": mission_name})
-
-    # Only store concrete bag names (no globs). If none, omit the key.
-    bags_to_store = []
-    if bags:
-        for b in bags:
-            if "*" not in b and "?" not in b:
-                bags_to_store.append(b)
-    if bags_to_store:
-        entry["bags"] = sorted(bags_to_store)
-    else:
-        # ensure we don't keep old bag lists if we only have patterns now
-        entry.pop("bags", None)
 
     cur[mission_id] = entry
 
@@ -250,15 +214,55 @@ def download_selected(mission_id: str, dest: Path, selected_patterns: List[str],
             raise RuntimeError(f"'klein download' failed for patterns: {selected_patterns}")
     print("[info] Downloaded (pattern mode).")
 
+def _gps_files_in_dir(d: Path) -> list[Path]:
+    gps = list(d.glob("*_cpt7_ie_tc.bag")) + list(d.glob("*_cpt7_ie_rt.bag"))
+    # ignore macOS AppleDouble
+    return [p for p in gps if not p.name.startswith("._")]
+
+def _cleanup_downloaded_bags(dest_dir: Path, remove_folder: bool) -> int:
+    """Remove real .bag files (skip AppleDouble). Optionally remove folder if it ends up empty."""
+    removed = 0
+    for p in dest_dir.glob("*.bag"):
+        if p.name.startswith("._"):
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except Exception as e:
+            print(f"[warn] Could not remove {p}: {e}", file=sys.stderr)
+    if remove_folder:
+        try:
+            # remove folder iff empty
+            next(dest_dir.iterdir())
+        except StopIteration:
+            try:
+                dest_dir.rmdir()
+                print(f"[skip] Removed empty folder {dest_dir}", file=sys.stderr)
+            except Exception as e:
+                print(f"[warn] Could not remove folder {dest_dir}: {e}", file=sys.stderr)
+        except FileNotFoundError:
+            pass
+    return removed
+
 def main():
     ap = argparse.ArgumentParser(description="Download selected rosbags for a mission.")
     ap.add_argument("--mission-id", required=True, help="Mission UUID")
     ap.add_argument("--mission-name", default=None, help="Optional alias (e.g., Heap-1)")
     ap.add_argument("--extra", nargs="*", default=[], help="Extra bag kinds to include (e.g., adis locomotion dlio)")
     ap.add_argument("--dry-run", action="store_true", help="Print commands, do not download")
+
+    ap.add_argument("--require-gps", action=BooleanOptionalAction, default=True,
+                    help="If set (default), exit with code 20 when no GPS bag is present.")
+    ap.add_argument("--cleanup-on-missing-gps", action=BooleanOptionalAction, default=True,
+                    help="If require-gps and GPS missing, remove downloaded files before exiting.")
+    ap.add_argument("--remove-folder-on-missing-gps", action=BooleanOptionalAction, default=True,
+                    help="If GPS missing and folder becomes empty, remove the mission folder.")
     args = ap.parse_args()
 
-    raw_root: Path = P["RAW"]
+    try:
+        raw_root: Path = P["RAW"]
+    except KeyError as e:
+        raise SystemExit("[error] paths config missing 'RAW' directory") from e
     ensure_dirs(raw_root)
 
     # Choose folder deterministically based on missions.json (see rules above)
@@ -271,10 +275,43 @@ def main():
     for p in patterns:
         print("  -", p)
 
-    download_selected(args.mission_id, dest_dir, patterns, args.dry_run)
+    # --- Phase 1: GPS-first probe ---
+    gps_patterns = [p for p in patterns if ("cpt7_ie_tc" in p or "cpt7_ie_rt" in p)]
+    non_gps_patterns = [p for p in patterns if p not in gps_patterns]
 
-    # Store mission id, name and chosen folder only (no globs)
-    update_missions_json(args.mission_id, folder_name, args.mission_name, bags=None)
+    if args.require_gps and not args.dry_run:
+        if gps_patterns:
+            print("[info] Probing for GPS bags first…")
+            download_selected(args.mission_id, dest_dir, gps_patterns, dry=False)
+        else:
+            # Shouldn't happen with your defaults, but keep behavior sane.
+            print("[warn] No GPS patterns in configuration; cannot probe before full download.", file=sys.stderr)
+
+        if len(_gps_files_in_dir(dest_dir)) == 0:
+            print("[skip] No GPS bag found (expected *_cpt7_ie_tc.bag or *_cpt7_ie_rt.bag).", file=sys.stderr)
+            print(f"[skip] Mission {args.mission_name or args.mission_id} will be skipped.", file=sys.stderr)
+            if args.cleanup_on_missing_gps:
+                removed = _cleanup_downloaded_bags(dest_dir, args.remove_folder_on_missing_gps)
+                print(f"[skip] Cleaned up {removed} bag(s) in {dest_dir}", file=sys.stderr)
+            # Do NOT update missions.json in this case (we didn’t really import usable data)
+            sys.exit(EXIT_NO_GPS)
+
+    # --- Phase 2: Download the rest (including GPS if require-gps=False or dry-run) ---
+    if args.dry_run:
+        # In dry-run we can’t know presence; just show both phases as “would run”
+        if gps_patterns:
+            print("[dry-run] Would run GPS probe download:")
+            print("          ", " ".join(["klein", "download", "-m", args.mission_id, "--dest", str(dest_dir), *gps_patterns]))
+        print("[dry-run] Would run full/non-GPS download:")
+        pats = non_gps_patterns if args.require_gps else patterns
+        print("          ", " ".join(["klein", "download", "-m", args.mission_id, "--dest", str(dest_dir), *pats]))
+    else:
+        pats = non_gps_patterns if args.require_gps else patterns
+        if pats:
+            download_selected(args.mission_id, dest_dir, pats, dry=False)
+
+    # Record mission metadata only when proceeding (i.e., not skipped)
+    update_missions_json(args.mission_id, folder_name, args.mission_name)
     print("[done] Ready at:", dest_dir)
 
 if __name__ == "__main__":
