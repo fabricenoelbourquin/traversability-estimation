@@ -7,12 +7,86 @@ from pathlib import Path
 from typing import List
 import yaml
 
+from pathlib import Path as _P
+_THIS = _P(__file__).resolve()
+_SRC_ROOT = _THIS.parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+from utils.paths import get_paths
+
 def sh(cmd: List[str]) -> None:
     print("\n$ " + " ".join(cmd))
     subprocess.run(cmd, check=True)
 
 def yes(x) -> bool:
     return bool(x) and str(x).lower() not in {"0", "false", "no", "off"}
+
+# ---------- helpers for corruption handling ----------
+def _resolve_short_folder(mission_id: str, mission_name: str | None, repo_root: Path) -> Tuple[str, str]:
+    """
+    Return (short_folder, display_name) for the mission using config/missions.json.
+    display_name prefers the alias (mission_name) if it maps to mission_id.
+    """
+    mj = repo_root / "config" / "missions.json"
+    meta = yaml.safe_load(mj.read_text()) if mj.suffix in {".yaml", ".yml"} else __import__("json").loads(mj.read_text())
+    alias_map = meta.get("_aliases", {})
+    # If name given and maps to some id, prefer that id; else mission_id
+    resolved_id = alias_map.get(mission_name, mission_id) if mission_name else mission_id
+    entry = meta.get(resolved_id)
+    if not entry:
+        raise KeyError(f"Mission '{mission_name or mission_id}' not found in missions.json")
+    short = entry["folder"]
+    # choose display
+    if mission_name and alias_map.get(mission_name) == resolved_id:
+        display = mission_name
+    else:
+        # any alias pointing to this id
+        rev = [a for a, mid in alias_map.items() if mid == resolved_id]
+        display = rev[0] if rev else short
+    return short, display
+
+def _header_ok(p: Path) -> bool:
+    try:
+        with p.open("rb") as f:
+            head = f.read(16)
+        return head.startswith(b"#ROSBAG")
+    except Exception:
+        return False
+
+def _find_bad_bags(raw_dir: Path) -> list[Path]:
+    """
+    Detect unreadable ROS1 bags. Ignore macOS AppleDouble files (._*).
+    Returns a list of paths that should be deleted & re-downloaded.
+    """
+    bad: list[Path] = []
+    try:
+        from rosbags.highlevel import AnyReader
+    except Exception:
+        # If rosbags is not importable here, just fallback to header-only screening.
+        AnyReader = None  # type: ignore
+
+    for p in sorted(raw_dir.glob("*.bag")):
+        if p.name.startswith("._"):  # macOS sidecar, not a real bag
+            bad.append(p)
+            continue
+        if not _header_ok(p):
+            bad.append(p)
+            continue
+        if AnyReader is not None:
+            try:
+                with AnyReader([p]) as r:
+                    pass
+            except Exception:
+                bad.append(p)
+    return bad
+
+def _delete_files(files: list[Path]) -> None:
+    for p in files:
+        try:
+            print(f"[warn] Removing unreadable file: {p}")
+            p.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[warn] Could not remove {p}: {e}")
 
 def main():
     p = argparse.ArgumentParser(description="Run pipeline for a single mission (sequential).")
@@ -42,6 +116,15 @@ def main():
     if not mission_id:
         raise ValueError("Missing required --mission-id (or set mission_id in the YAML).")
 
+    P = get_paths()
+    REPO_ROOT: Path = P["REPO_ROOT"]
+    RAW_ROOT: Path = P["RAW"]
+
+    # Find the mission folder in RAW to scan/delete bad bags if needed
+    short_folder, display_name = _resolve_short_folder(mission_id, mission_name, REPO_ROOT)
+    raw_dir = RAW_ROOT / short_folder
+
+
     # Helper: for stages that accept either --mission OR --mission-id (but not both)
     def ident_either() -> List[str]:
         if mission_name:
@@ -67,9 +150,55 @@ def main():
     else:
         print(">> Skipping download (already-downloaded / skip-download).")
 
-    # 2) Extract (must pass ONE of the two)
+    # 2) Extract with self-heal
+    def _try_extract_with_self_heal() -> None:
+        """Attempt extract; if it fails due to corrupted bags, delete bad ones, re-download, and retry once."""
+        # First attempt
+        try:
+            sh([py, "src/extract_bag.py", *ident_either()])
+            return
+        except subprocess.CalledProcessError as first_err:
+            print("[warn] extract_bag.py failed - scanning for unreadable bags…")
+            # Scan RAW mission dir
+            if not raw_dir.exists():
+                print(f"[error] Raw dir not found: {raw_dir}")
+                raise
+
+            bad = _find_bad_bags(raw_dir)
+            if not bad:
+                print("[warn] No unreadable bags detected. Re-raising original error.")
+                raise first_err
+
+            # Delete unreadable files (including '._*')
+            _delete_files(bad)
+
+            # Re-download mission bags (pattern-based) so the removed ones are fetched again
+            try:
+                dl_cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
+                if mission_name:
+                    dl_cmd += ["--mission-name", mission_name]
+                sh(dl_cmd)
+            except subprocess.CalledProcessError as e:
+                print(f"[error] Re-download failed: {e}")
+                raise first_err
+
+            # Retry extract once
+            try:
+                sh([py, "src/extract_bag.py", *ident_either()])
+                print("[info] extract_bag.py succeeded after self-heal.")
+                return
+            except subprocess.CalledProcessError as second_err:
+                print("[error] extract_bag.py failed again after re-download. Giving up.")
+                # Optional: show which bags are still broken
+                still_bad = _find_bad_bags(raw_dir)
+                if still_bad:
+                    print("[error] Unreadable bags still present:")
+                    for pth in still_bad:
+                        print(f"  - {pth}")
+                raise second_err
+
     if not skip_extract:
-        sh([py, "src/extract_bag.py", *ident_either()])
+        _try_extract_with_self_heal()
     else:
         print(">> Skipping extract (already-downloaded / skip-extract).")
 
