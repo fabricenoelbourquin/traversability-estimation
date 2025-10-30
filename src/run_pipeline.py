@@ -22,7 +22,7 @@ def yes(x) -> bool:
     return bool(x) and str(x).lower() not in {"0", "false", "no", "off"}
 
 # ---------- helpers for corruption handling ----------
-def _resolve_short_folder(mission_id: str, mission_name: str | None, repo_root: Path) -> Tuple[str, str]:
+def _resolve_short_folder(mission_id: str, mission_name: str | None, repo_root: Path) -> tuple[str, str]:
     """
     Return (short_folder, display_name) for the mission using config/missions.json.
     display_name prefers the alias (mission_name) if it maps to mission_id.
