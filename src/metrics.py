@@ -1,11 +1,11 @@
 # src/metrics.py
 from __future__ import annotations
-from typing import Callable, Dict, Iterable
+from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
 
 # --- registry ---
-REGISTRY: Dict[str, Callable[[pd.DataFrame, dict], pd.Series]] = {}
+REGISTRY: dict[str, Callable[[pd.DataFrame, dict], pd.Series]] = {}
 
 def metric(name: str):
     def wrap(fn: Callable[[pd.DataFrame, dict], pd.Series]):

@@ -26,7 +26,7 @@ python src/sync_streams.py \
 from __future__ import annotations
 import argparse, json, math
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd

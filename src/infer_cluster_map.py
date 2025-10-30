@@ -17,7 +17,7 @@ python src/infer_cluster_map.py --mission ETH-1
 from __future__ import annotations
 import argparse, io, json, os, re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 from PIL import Image
@@ -100,7 +100,7 @@ def to_uint8_rgb(arr_hw3: np.ndarray) -> np.ndarray:
         x = np.clip((x - lo) / (hi - lo), 0, 1)
     return (x * 255.0 + 0.5).astype(np.uint8)
 
-def _read_geotiff_rgb(path_or_mem) -> Tuple[np.ndarray, rasterio.DatasetReader]:
+def _read_geotiff_rgb(path_or_mem) -> tuple[np.ndarray, rasterio.DatasetReader]:
     src = rasterio.open(path_or_mem)
     try:
         bands = src.count
@@ -115,7 +115,7 @@ def _read_geotiff_rgb(path_or_mem) -> Tuple[np.ndarray, rasterio.DatasetReader]:
         src.close()
         raise
 
-def load_image_from_path(path: str, stride: int) -> Tuple[np.ndarray, Optional[rasterio.DatasetReader], Tuple[int,int]]:
+def load_image_from_path(path: str, stride: int) -> tuple[np.ndarray, Optional[rasterio.DatasetReader], tuple[int,int]]:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".tif", ".tiff"):
         rgb, ds = _read_geotiff_rgb(path)

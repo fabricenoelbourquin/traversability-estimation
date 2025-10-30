@@ -12,7 +12,7 @@ Examples:
 from __future__ import annotations
 from pathlib import Path
 import argparse, json, os, re, sys, time
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import pandas as pd
 import numpy as np
@@ -43,7 +43,7 @@ def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
 
-def resolve_mission(missions: dict, mission: Optional[str], mission_id: Optional[str]) -> Tuple[str, str]:
+def resolve_mission(missions: dict, mission: Optional[str], mission_id: Optional[str]) -> tuple[str, str]:
     """
     Returns (mission_id, mission_folder).
     Allows addressing by alias (missions['_aliases'][name] -> mission_id).
@@ -66,7 +66,7 @@ def resolve_mission(missions: dict, mission: Optional[str], mission_id: Optional
     folder = entry.get("folder") or (mission_id.split("-")[0])
     return mission_id, folder
 
-def choose_topics(conns, topics_cfg: dict) -> Dict[str, str]:
+def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
     """
     Choose topic names for cmd_vel, odom, gps, imu.
     Preference:
@@ -76,7 +76,7 @@ def choose_topics(conns, topics_cfg: dict) -> Dict[str, str]:
     """
     # explicit config (optional)
     explicit = (topics_cfg or {}).get("topics", {})
-    chosen: Dict[str, Optional[str]] = {
+    chosen: dict[str, Optional[str]] = {
         "cmd_vel": explicit.get("cmd_vel"),
         "odom": explicit.get("odom"),
         "gps": explicit.get("gps"),
@@ -87,7 +87,7 @@ def choose_topics(conns, topics_cfg: dict) -> Dict[str, str]:
     # Build list of (topic, msgtype)
     items = [(c.topic, c.msgtype) for c in conns]
 
-    def pick(pred_name_re: re.Pattern, type_whitelist: Tuple[str, ...], prefer_re: Optional[re.Pattern]=None) -> Optional[str]:
+    def pick(pred_name_re: re.Pattern, type_whitelist: tuple[str, ...], prefer_re: Optional[re.Pattern]=None) -> Optional[str]:
         cand = []
         for topic, mtype in items:
             if pred_name_re.search(topic) and mtype in type_whitelist:
@@ -245,7 +245,7 @@ def main():
     rosbags_yaml = load_yaml(rr / "config" / "rosbags.yaml")
     patterns = rosbags_yaml.get("defaults", ["*.bag"])
     # Expand patterns relative to the mission folder
-    bag_paths: List[Path] = []
+    bag_paths: list[Path] = []
     for pat in patterns:
         bag_paths.extend(sorted(raw_dir.glob(pat)))
     # De-duplicate while preserving order

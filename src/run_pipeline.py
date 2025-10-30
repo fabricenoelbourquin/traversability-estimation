@@ -4,7 +4,6 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
 import yaml
 
 from pathlib import Path as _P
@@ -14,7 +13,7 @@ if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 from utils.paths import get_paths
 
-def sh(cmd: List[str]) -> None:
+def sh(cmd: list[str]) -> None:
     print("\n$ " + " ".join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -128,7 +127,7 @@ def main():
 
 
     # Helper: for stages that accept either --mission OR --mission-id (but not both)
-    def ident_either() -> List[str]:
+    def ident_either() -> list[str]:
         if mission_name:
             return ["--mission", mission_name]
         return ["--mission-id", mission_id]
