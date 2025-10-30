@@ -13,3 +13,4 @@ reports/**
 **/cache/**
 **/logs/**
 *.parquet
+.cache/
