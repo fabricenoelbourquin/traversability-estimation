@@ -19,7 +19,7 @@ Usage:
 from __future__ import annotations
 import argparse, json, math
 from pathlib import Path
-from typing import List, Tuple, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ def pick_synced_parquet(sync_dir: Path, hz: int | None) -> Path:
         raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
     return cands[0]
 
-def get_ll_points_from_synced(df: pd.DataFrame) -> List[Tuple[float, float]]:
+def get_ll_points_from_synced(df: pd.DataFrame) -> list[tuple[float, float]]:
     """Return list of (lon, lat) from synced parquet, dropping NaNs."""
     if not {"lat", "lon"}.issubset(df.columns):
         raise KeyError("Synced parquet has no 'lat'/'lon'. Did GPS make it into sync?")
@@ -83,7 +83,7 @@ def _to_2056_geom(geom_ll):
     to_2056 = Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True).transform
     return shp_transform(to_2056, geom_ll)
 
-def build_centered_chip_2056(points_ll: Sequence[Tuple[float,float]], chip_px: int, gsd_m: float):
+def build_centered_chip_2056(points_ll: Sequence[tuple[float,float]], chip_px: int, gsd_m: float):
     """
     Square chip (EPSG:2056 bounds) centered on the track bbox center.
     side_m = chip_px * gsd_m
