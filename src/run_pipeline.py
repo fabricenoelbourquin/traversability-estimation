@@ -119,10 +119,12 @@ def main():
     P = get_paths()
     REPO_ROOT: Path = P["REPO_ROOT"]
     RAW_ROOT: Path = P["RAW"]
+    TABLES_ROOT: Path = P["TABLES"]
 
     # Find the mission folder in RAW to scan/delete bad bags if needed
     short_folder, display_name = _resolve_short_folder(mission_id, mission_name, REPO_ROOT)
     raw_dir = RAW_ROOT / short_folder
+    tables_dir = TABLES_ROOT / short_folder
 
 
     # Helper: for stages that accept either --mission OR --mission-id (but not both)
@@ -146,7 +148,13 @@ def main():
         cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
         if mission_name:
             cmd += ["--mission-name", mission_name]
-        sh(cmd)
+        try:
+            sh(cmd)
+        except subprocess.CalledProcessError as e:
+            if e.returncode == 20:
+                print(f"[skip] {display_name}: missing GPS bag; skipping mission.")
+                sys.exit(20)
+            raise
     else:
         print(">> Skipping download (already-downloaded / skip-download).")
 
@@ -201,6 +209,21 @@ def main():
         _try_extract_with_self_heal()
     else:
         print(">> Skipping extract (already-downloaded / skip-extract).")
+
+    # Early GPS check after extraction (skip if gps.parquet missing/empty)    
+    gps_parquet = tables_dir / "gps.parquet"
+    if not gps_parquet.exists():
+        print(f"[skip] {display_name}: GPS table missing after extraction; skipping mission.")
+        sys.exit(20)
+    try:
+        import pandas as _pd
+        if _pd.read_parquet(gps_parquet).empty:
+            print(f"[skip] {display_name}: GPS table is empty; skipping mission.")
+            sys.exit(20)
+    except Exception as _e:
+        # If we can’t read it, treat as missing
+        print(f"[skip] {display_name}: GPS table unreadable ({_e}); skipping mission.")
+        sys.exit(20)
 
     # 3) Sync streams
     if not skip_sync:

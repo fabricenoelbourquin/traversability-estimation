@@ -74,7 +74,12 @@ def main():
         for name, fut in futs:
             try:
                 code = fut.result()
-                status = "ok" if code == 0 else f"fail ({code})"
+                if code == 0:
+                    status = "ok"
+                elif code == 20:
+                    status = "skip (missing GPS)"
+                else:
+                    status = f"fail ({code})"
                 print(f"[{status}] {name}")
             except Exception as e:
                 print(f"[error] {name}: {e}")
