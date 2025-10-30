@@ -123,26 +123,43 @@ def cluster_png_path(short: str, kmeans_k: int, emb: str) -> Path:
     return p
 
 def latlon_to_pixels(lat: np.ndarray, lon: np.ndarray, tif_path: Path) -> Tuple[np.ndarray, np.ndarray, int, int]:
-    """Project WGS84 lat/lon -> LV95 (EPSG:2056) -> pixel (col,row) for the given GeoTIFF."""
+    """Project WGS84 lat/lon -> target CRS -> pixel (col,row) for the given GeoTIFF.
+       Robust to NaNs in lat/lon: returns NaNs for those positions in (cols, rows)."""
+    lat = lat.astype(float)
+    lon = lon.astype(float)
+
     with rasterio.open(tif_path) as ds:
-        crs_dst = ds.crs
-        if crs_dst is None:
-            raise RuntimeError(f"{tif_path} has no CRS")
-        H, W = ds.height, ds.width
-        tf = Transformer.from_crs("EPSG:4326", crs_dst, always_xy=True)
-        x, y = tf.transform(lon.astype(float), lat.astype(float))
-        r, c = rowcol(ds.transform, x, y, op=round)
-    return np.asarray(c), np.asarray(r), W, H
+        if ds.crs is None:
+            raise RuntimeError(f"{tif_path} has no CRS/geotransform — regenerate the swissimg GeoTIFF with georeferencing.")
+        W, H = ds.width, ds.height
+
+        ok = np.isfinite(lat) & np.isfinite(lon)
+        cols = np.full(lat.shape, np.nan, dtype=float)
+        rows = np.full(lat.shape, np.nan, dtype=float)
+        if ok.any():
+            tf = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
+            x, y = tf.transform(lon[ok], lat[ok])          # note: always_xy=True → (lon, lat)
+            r, c = rowcol(ds.transform, x, y, op=np.round) # arrays back
+            rows[ok] = r
+            cols[ok] = c
+
+    return cols, rows, W, H
+
 
 def aggregate_per_pixel(cols: np.ndarray, rows: np.ndarray, values: np.ndarray, W: int, H: int) -> pd.DataFrame:
     """Keep in-bounds samples and average values per (row,col)."""
-    m = ~np.isnan(values)
+    m = (~np.isnan(values)) & (~np.isnan(cols)) & (~np.isnan(rows))
     m &= (cols >= 0) & (cols < W) & (rows >= 0) & (rows < H)
     if m.sum() == 0:
         raise RuntimeError("No in-bounds samples to plot.")
-    df = pd.DataFrame({"col": cols[m].astype(int), "row": rows[m].astype(int), "val": values[m].astype(float)})
+    df = pd.DataFrame({
+        "col": cols[m].astype(int),
+        "row": rows[m].astype(int),
+        "val": values[m].astype(float),
+    })
     g = df.groupby(["row", "col"], as_index=False)["val"].mean()
-    return g  # columns: row, col, val
+    return g
+
 
 def pick_vmin_vmax(vals: np.ndarray, clip_percentile: float, min_zero: bool) -> Tuple[float, float]:
     vmax = np.nanpercentile(vals, clip_percentile) if clip_percentile else np.nanmax(vals)
