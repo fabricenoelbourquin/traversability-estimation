@@ -253,7 +253,7 @@ def download_selected(mission_id: str, dest: Path, selected_patterns: List[str],
 def main():
     ap = argparse.ArgumentParser(description="Download selected rosbags for a mission.")
     ap.add_argument("--mission-id", required=True, help="Mission UUID")
-    ap.add_argument("--mission-name", default=None, help="Optional alias (e.g., Heap_1)")
+    ap.add_argument("--mission-name", default=None, help="Optional alias (e.g., Heap-1)")
     ap.add_argument("--extra", nargs="*", default=[], help="Extra bag kinds to include (e.g., adis locomotion dlio)")
     ap.add_argument("--dry-run", action="store_true", help="Print commands, do not download")
     args = ap.parse_args()

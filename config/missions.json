@@ -3,7 +3,52 @@
     "ETH-1": "e97e35ad-dd7b-49c4-a158-95aba246520e",
     "SPX-1": "b845fb1b-310c-4236-a33c-c0d2c9a98092",
     "HEAP-1": "512edee1-de86-463f-bdda-f55362e2fda1",
-    "PIL-2": "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb"
+    "PIL-2": "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb",
+    "ALB-3": "ccf36f13-9d19-4dca-8f4d-f797b4093c3b",
+    "ALB-1": "624138ba-3e34-4f19-8034-af9661a566a4",
+    "ALB-2": "4aa3b180-7422-479f-a838-344c726175e1",
+    "ARC-1": "0a626104-cdfa-47de-827a-806b0ca5326a",
+    "ARC-2": "2a4c4bd7-acfd-4c00-84c3-bf5dd6a57ad6",
+    "ARC-3": "a031c136-cdba-4547-bce7-57319891ce17",
+    "ARC-5": "ff789a67-7541-43d8-bbe7-381e5d5105ab",
+    "ARC-4": "ad4cbee5-c3d8-4082-b629-e22af45faac8",
+    "ARC-6": "c38e6cdc-cadb-4f15-bd96-daa89cb46edf",
+    "ARC-7": "529abc82-87fc-4edf-a16f-9061893c5aab",
+    "CON-1": "d3943914-d045-4442-a63c-903cbbbd2be1",
+    "CYN-1": "7ffa3399-837f-40b7-8a2f-5760ce136533",
+    "CYN-2": "58e4d73e-fff1-4209-bf95-6c1ee065b3f3",
+    "CON-4": "a531a101-0211-46a2-b13f-605aa4b888ab",
+    "CON-3": "f6d20c92-44af-4697-a6d5-773bddc35fa5",
+    "EIG-1": "aa22a692-a29d-4676-98b8-42dd417eeae4",
+    "ETH-2": "4ae7f9bc-ee51-4ba7-97c7-6a86fe765ab8",
+    "CON-2": "48a42585-1b42-44df-bf82-883b09706efa",
+    "EIG-2": "a2bb34d5-f963-4a63-bf4a-8ffab2da1589",
+    "ETH-3": "da8f2265-5138-4d0b-8ae1-01e0015d1c58",
+    "GRI-1": "34c04ec5-c1b7-4674-9d64-99ade50f71d0",
+    "HAUS-1": "10aa8311-2487-4e5c-9136-91b1d9ae4efa",
+    "HIL-1": "d38b3b33-c450-4bce-bbb8-5f961b6bb17c",
+    "ICE-1": "6a572e3b-57ad-4697-9ce6-0c67f451174a",
+    "H\u00d6B-2": "5e356450-ccb0-4b8c-bd5e-21e5bfdb0d08",
+    "H\u00d6B-1": "1a30c7fd-d833-48ac-8bf5-0d3f3f0ba5a1",
+    "K\u00c4B-1": "1b64c4e0-2747-4a4d-b983-2454b5481a69",
+    "K\u00c4B-3": "8c3d3ce2-df6a-4ec4-98f5-1a9e08ef276e",
+    "K\u00c4B-2": "a454ce28-69f8-46a5-9168-08b2c42ae385",
+    "LEICA-1": "19e1ac85-eaf9-4d8e-baf0-27dbb215e9f4",
+    "LEE-1": "4bf387d8-624a-462b-b69b-f2b4dbfce565",
+    "LEICA-2": "fb5f7a04-e95f-4601-a6f2-948ff69f0735",
+    "LMB-2": "a866b43f-4cec-427d-871a-77d95a926075",
+    "LMB-1": "2924d315-1d96-4db7-9df2-c9fd23d3fa9e",
+    "RIV-1": "57363d91-6cbc-4b2f-ad25-d511fd0829e1",
+    "PIL-1": "e3a92c6b-1fbb-496a-bdb0-ec754ec8f6f0",
+    "ROOT-1": "f7e8e6c1-828f-43a7-b047-1491217e8fb9",
+    "SNOW-1": "d7c37880-a3cf-4aaa-b489-e501591d14b7",
+    "SBB-1": "75516885-5b6d-4703-9dcc-766519f9737c",
+    "SBB-2": "6feee8a7-2588-4e7e-9fd4-cf897af71206",
+    "SNOW-2": "82e5488f-7824-45c6-94be-b3c68ca32aa7",
+    "SNOW-3": "ee14fd01-73f1-498b-8b64-a427257ea577",
+    "SPX-2": "57b64279-18a3-451b-a516-51c1ea9c7e9a",
+    "SPX-3": "c31cdc28-cb10-4eff-adec-53b0069eacac",
+    "TRIM-1": "b686ebd4-da47-4e49-ab20-c5504049f4b8"
   },
   "e97e35ad-dd7b-49c4-a158-95aba246520e": {
     "folder": "e97e35ad",
@@ -20,5 +65,185 @@
   "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb": {
     "folder": "8a90fb38",
     "name": "PIL-2"
+  },
+  "ccf36f13-9d19-4dca-8f4d-f797b4093c3b": {
+    "folder": "ccf36f13",
+    "name": "ALB-3"
+  },
+  "624138ba-3e34-4f19-8034-af9661a566a4": {
+    "folder": "624138ba",
+    "name": "ALB-1"
+  },
+  "4aa3b180-7422-479f-a838-344c726175e1": {
+    "folder": "4aa3b180",
+    "name": "ALB-2"
+  },
+  "0a626104-cdfa-47de-827a-806b0ca5326a": {
+    "folder": "0a626104",
+    "name": "ARC-1"
+  },
+  "2a4c4bd7-acfd-4c00-84c3-bf5dd6a57ad6": {
+    "folder": "2a4c4bd7",
+    "name": "ARC-2"
+  },
+  "a031c136-cdba-4547-bce7-57319891ce17": {
+    "folder": "a031c136",
+    "name": "ARC-3"
+  },
+  "ff789a67-7541-43d8-bbe7-381e5d5105ab": {
+    "folder": "ff789a67",
+    "name": "ARC-5"
+  },
+  "ad4cbee5-c3d8-4082-b629-e22af45faac8": {
+    "folder": "ad4cbee5",
+    "name": "ARC-4"
+  },
+  "c38e6cdc-cadb-4f15-bd96-daa89cb46edf": {
+    "folder": "c38e6cdc",
+    "name": "ARC-6"
+  },
+  "529abc82-87fc-4edf-a16f-9061893c5aab": {
+    "folder": "529abc82",
+    "name": "ARC-7"
+  },
+  "d3943914-d045-4442-a63c-903cbbbd2be1": {
+    "folder": "d3943914",
+    "name": "CON-1"
+  },
+  "7ffa3399-837f-40b7-8a2f-5760ce136533": {
+    "folder": "7ffa3399",
+    "name": "CYN-1"
+  },
+  "58e4d73e-fff1-4209-bf95-6c1ee065b3f3": {
+    "folder": "58e4d73e",
+    "name": "CYN-2"
+  },
+  "a531a101-0211-46a2-b13f-605aa4b888ab": {
+    "folder": "a531a101",
+    "name": "CON-4"
+  },
+  "f6d20c92-44af-4697-a6d5-773bddc35fa5": {
+    "folder": "f6d20c92",
+    "name": "CON-3"
+  },
+  "aa22a692-a29d-4676-98b8-42dd417eeae4": {
+    "folder": "aa22a692",
+    "name": "EIG-1"
+  },
+  "4ae7f9bc-ee51-4ba7-97c7-6a86fe765ab8": {
+    "folder": "4ae7f9bc",
+    "name": "ETH-2"
+  },
+  "48a42585-1b42-44df-bf82-883b09706efa": {
+    "folder": "48a42585",
+    "name": "CON-2"
+  },
+  "a2bb34d5-f963-4a63-bf4a-8ffab2da1589": {
+    "folder": "a2bb34d5",
+    "name": "EIG-2"
+  },
+  "da8f2265-5138-4d0b-8ae1-01e0015d1c58": {
+    "folder": "da8f2265",
+    "name": "ETH-3"
+  },
+  "34c04ec5-c1b7-4674-9d64-99ade50f71d0": {
+    "folder": "34c04ec5",
+    "name": "GRI-1"
+  },
+  "10aa8311-2487-4e5c-9136-91b1d9ae4efa": {
+    "folder": "10aa8311",
+    "name": "HAUS-1"
+  },
+  "d38b3b33-c450-4bce-bbb8-5f961b6bb17c": {
+    "folder": "d38b3b33",
+    "name": "HIL-1"
+  },
+  "6a572e3b-57ad-4697-9ce6-0c67f451174a": {
+    "folder": "6a572e3b",
+    "name": "ICE-1"
+  },
+  "5e356450-ccb0-4b8c-bd5e-21e5bfdb0d08": {
+    "folder": "5e356450",
+    "name": "H\u00d6B-2"
+  },
+  "1a30c7fd-d833-48ac-8bf5-0d3f3f0ba5a1": {
+    "folder": "1a30c7fd",
+    "name": "H\u00d6B-1"
+  },
+  "1b64c4e0-2747-4a4d-b983-2454b5481a69": {
+    "folder": "1b64c4e0",
+    "name": "K\u00c4B-1"
+  },
+  "8c3d3ce2-df6a-4ec4-98f5-1a9e08ef276e": {
+    "folder": "8c3d3ce2",
+    "name": "K\u00c4B-3"
+  },
+  "a454ce28-69f8-46a5-9168-08b2c42ae385": {
+    "folder": "a454ce28",
+    "name": "K\u00c4B-2"
+  },
+  "19e1ac85-eaf9-4d8e-baf0-27dbb215e9f4": {
+    "folder": "19e1ac85",
+    "name": "LEICA-1"
+  },
+  "4bf387d8-624a-462b-b69b-f2b4dbfce565": {
+    "folder": "4bf387d8",
+    "name": "LEE-1"
+  },
+  "fb5f7a04-e95f-4601-a6f2-948ff69f0735": {
+    "folder": "fb5f7a04",
+    "name": "LEICA-2"
+  },
+  "a866b43f-4cec-427d-871a-77d95a926075": {
+    "folder": "a866b43f",
+    "name": "LMB-2"
+  },
+  "2924d315-1d96-4db7-9df2-c9fd23d3fa9e": {
+    "folder": "2924d315",
+    "name": "LMB-1"
+  },
+  "57363d91-6cbc-4b2f-ad25-d511fd0829e1": {
+    "folder": "57363d91",
+    "name": "RIV-1"
+  },
+  "e3a92c6b-1fbb-496a-bdb0-ec754ec8f6f0": {
+    "folder": "e3a92c6b",
+    "name": "PIL-1"
+  },
+  "f7e8e6c1-828f-43a7-b047-1491217e8fb9": {
+    "folder": "f7e8e6c1",
+    "name": "ROOT-1"
+  },
+  "d7c37880-a3cf-4aaa-b489-e501591d14b7": {
+    "folder": "d7c37880",
+    "name": "SNOW-1"
+  },
+  "75516885-5b6d-4703-9dcc-766519f9737c": {
+    "folder": "75516885",
+    "name": "SBB-1"
+  },
+  "6feee8a7-2588-4e7e-9fd4-cf897af71206": {
+    "folder": "6feee8a7",
+    "name": "SBB-2"
+  },
+  "82e5488f-7824-45c6-94be-b3c68ca32aa7": {
+    "folder": "82e5488f",
+    "name": "SNOW-2"
+  },
+  "ee14fd01-73f1-498b-8b64-a427257ea577": {
+    "folder": "ee14fd01",
+    "name": "SNOW-3"
+  },
+  "57b64279-18a3-451b-a516-51c1ea9c7e9a": {
+    "folder": "57b64279",
+    "name": "SPX-2"
+  },
+  "c31cdc28-cb10-4eff-adec-53b0069eacac": {
+    "folder": "c31cdc28",
+    "name": "SPX-3"
+  },
+  "b686ebd4-da47-4e49-ab20-c5504049f4b8": {
+    "folder": "b686ebd4",
+    "name": "TRIM-1"
   }
 }
