@@ -18,7 +18,6 @@ Examples:
 from __future__ import annotations
 import argparse, json, os, re, shlex, subprocess, sys
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
 from argparse import BooleanOptionalAction
 
 # --- paths helper ---
@@ -197,7 +196,7 @@ def update_missions_json(
     atomic_write_json(mj, cur)
     print(f"[info] Updated {mj}")
 
-def download_selected(mission_id: str, dest: Path, selected_patterns: List[str], dry: bool) -> None:
+def download_selected(mission_id: str, dest: Path, selected_patterns: list[str], dry: bool) -> None:
     if not selected_patterns:
         raise RuntimeError("No patterns provided to download.")
     ensure_dirs(dest)
