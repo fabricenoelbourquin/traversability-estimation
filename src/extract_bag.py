@@ -12,7 +12,6 @@ Examples:
 from __future__ import annotations
 from pathlib import Path
 import argparse, json, os, re, sys, time
-from typing import Optional
 
 import pandas as pd
 import numpy as np
@@ -43,7 +42,7 @@ def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
 
-def resolve_mission(missions: dict, mission: Optional[str], mission_id: Optional[str]) -> tuple[str, str]:
+def resolve_mission(missions: dict, mission: str | None, mission_id: str | None) -> tuple[str, str]:
     """
     Returns (mission_id, mission_folder).
     Allows addressing by alias (missions['_aliases'][name] -> mission_id).
@@ -76,7 +75,7 @@ def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
     """
     # explicit config (optional)
     explicit = (topics_cfg or {}).get("topics", {})
-    chosen: dict[str, Optional[str]] = {
+    chosen: dict[str, str | None] = {
         "cmd_vel": explicit.get("cmd_vel"),
         "odom": explicit.get("odom"),
         "gps": explicit.get("gps"),
@@ -87,7 +86,7 @@ def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
     # Build list of (topic, msgtype)
     items = [(c.topic, c.msgtype) for c in conns]
 
-    def pick(pred_name_re: re.Pattern, type_whitelist: tuple[str, ...], prefer_re: Optional[re.Pattern]=None) -> Optional[str]:
+    def pick(pred_name_re: re.Pattern, type_whitelist: tuple[str, ...], prefer_re: re.Pattern | None = None) -> str | None:
         cand = []
         for topic, mtype in items:
             if pred_name_re.search(topic) and mtype in type_whitelist:
