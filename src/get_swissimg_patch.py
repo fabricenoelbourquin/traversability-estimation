@@ -3,17 +3,19 @@
 Fetch a SwissImage RGB basemap chip centered on a mission trajectory,
 reading GPS (lat/lon) from the synced parquet.
 
+Optionally, fetch the swissALTI3D DEM for the same LV95 frame by downloading
+the corresponding 1 km swissALTI3D tiles from data.geo.admin.ch and mosaicking
+them to the chip extent.
+
 Saves:
   <DATA_ROOT>/maps/<mission_folder>/swissimg/
     swissimg_chip{chip_px}_gsd{gsd}_rgb8.tif
     swissimg_chip{chip_px}_gsd{gsd}_rgb8.png
-    swissimg_chip{chip_px}_gsd{gsd}.json  (metadata)
+    swissimg_chip{chip_px}_gsd{gsd}.json
 
-Usage:
-  python src/get_swissimg_patch.py --mission ETH-1
-  python src/get_swissimg_patch.py --mission e97e35ad-... --hz 10
-  # optional overrides:
-  python src/get_swissimg_patch.py --mission ETH-1 --chip-px 2048 --gsd-m 0.25
+  and if enabled in imagery.yaml (fetch.alti.mode: dem|both):
+    swissimg_chip{chip_px}_gsd{gsd}_dem{dem_res}m.tif
+    swissimg_chip{chip_px}_gsd{gsd}_dem{dem_res}m.png
 """
 
 from __future__ import annotations
@@ -30,12 +32,11 @@ from shapely.ops import transform as shp_transform
 from pyproj import Transformer
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.merge import merge
 from rasterio.transform import from_bounds
 
 # ---- paths helper (your existing one) ----
-
 from utils.paths import get_paths
-
 
 P = get_paths()
 
@@ -72,7 +73,6 @@ def get_ll_points_from_synced(df: pd.DataFrame) -> list[tuple[float, float]]:
     sub = df[["lon", "lat"]].dropna()
     if len(sub) < 2:
         raise RuntimeError("Not enough GPS points to build chip center.")
-    # mild decimation if huge (bbox/center only)
     if len(sub) > 20000:
         sub = sub.iloc[::10, :]
     return list(map(tuple, sub.to_numpy(dtype=float)))
@@ -96,7 +96,7 @@ def build_centered_chip_2056(points_ll: Sequence[tuple[float,float]], chip_px: i
     half = side_m / 2.0
     return (cx - half, cy - half, cx + half, cy + half)
 
-# ---- WMS fetch ----
+# ---- WMS fetch (SwissImage) ----
 def _wms_getmap(bbox_2056, width, height, url, layer, version, fmt):
     minx, miny, maxx, maxy = bbox_2056
     params = {
@@ -167,12 +167,191 @@ def save_png_rgb8(path: Path, rgb_uint8):
         dst.write(rgb_uint8[1], 2)
         dst.write(rgb_uint8[2], 3)
 
+# ---- swissALTI3D (1km tiles, deterministic) ----
+def _alti_tiles_for_bbox_2056(bbox_2056: tuple[float, float, float, float]) -> list[tuple[int, int]]:
+    """
+    swissALTI3D is published as 1 km tiles in LV95.
+    Tile name is basically <E_km>-<N_km>, e.g. 2573-1085.
+    """
+    minx, miny, maxx, maxy = bbox_2056
+    e_min = int(math.floor(minx / 1000))
+    e_max = int(math.floor((maxx - 1e-6) / 1000))
+    n_min = int(math.floor(miny / 1000))
+    n_max = int(math.floor((maxy - 1e-6) / 1000))
+    tiles: list[tuple[int, int]] = []
+    for e in range(e_min, e_max + 1):
+        for n in range(n_min, n_max + 1):
+            tiles.append((e, n))
+    return tiles
+
+
+def _download_alti_tile(
+    session: requests.Session,
+    year: int,
+    e_km: int,
+    n_km: int,
+    res_m_opts: list[float],
+) -> tuple[rasterio.io.DatasetReader, MemoryFile, float] | None:
+    """
+    Try to download ONE tile, trying several resolutions for that tile.
+    Returns (dataset, memfile, resolution_m) or None.
+    """
+    tile_id = f"swissalti3d_{year}_{e_km}-{n_km}"
+    base = f"https://data.geo.admin.ch/ch.swisstopo.swissalti3d/{tile_id}/{tile_id}"
+
+    for res_m in res_m_opts:
+        # swissalti3d_2019_2573-1085_0.5_2056_5728.tif
+        url = f"{base}_{res_m:g}_2056_5728.tif"
+        r = session.get(url, timeout=60)
+        if r.status_code == 200:
+            mem = MemoryFile(r.content)
+            ds = mem.open()
+            return ds, mem, float(res_m)
+    return None
+
+def fetch_swissalti3d_dem(
+    bbox_2056: tuple[float, float, float, float],
+    cfg_alti: dict,
+    out_dir: Path,
+    stem_like_img: str,
+):
+    """
+    Deterministic swissALTI3D download:
+    - figure out which 1 km tiles we need
+    - for EACH tile, try year, then fallbacks, and for EACH year try 0.5 m then 2.0 m
+    - whatever we get, we mosaic to EXACT bbox at EXACT target_res (default 0.5 m)
+    """
+    mode = cfg_alti.get("mode", "none")
+    if mode not in {"dem", "both"}:
+        return None
+
+    dem_cfg = cfg_alti.get("dem", {})
+    pref_year = int(dem_cfg.get("release_year", 2019))
+    fallback_years = dem_cfg.get("fallback_years", [2024, 2023, 2022, 2021, 2020, 2019])
+    # dedupe while keeping order
+    years = []
+    for y in [pref_year, *fallback_years]:
+        if y not in years:
+            years.append(y)
+
+    # you said: "I absolutely want 0.5m"
+    target_res = float(dem_cfg.get("resolution_m", 0.5))
+    # when downloading we can try 0.5 first, then 2.0 (resample later)
+    res_opts_download = dem_cfg.get("resolutions_m", [0.5, 2.0])
+
+    tiles = _alti_tiles_for_bbox_2056(bbox_2056)
+    if not tiles:
+        print("[warn] swissALTI3D: no tiles computed for this bbox (too small?)")
+        return None
+
+    session = requests.Session()
+    src_datasets: list[rasterio.io.DatasetReader] = []
+    src_memfiles: list[MemoryFile] = []
+    used_info: list[dict] = []
+
+    for (e_km, n_km) in tiles:
+        ds = None
+        mem = None
+        used_year = None
+        used_res = None
+        for year in years:
+            got = _download_alti_tile(session, year, e_km, n_km, res_opts_download)
+            if got is not None:
+                ds, mem, used_res = got
+                used_year = year
+                break
+        if ds is not None:
+            src_datasets.append(ds)
+            src_memfiles.append(mem)  # keep alive
+            used_info.append(
+                {
+                    "tile": f"{e_km}-{n_km}",
+                    "year": used_year,
+                    "resolution_m": used_res,
+                }
+            )
+        else:
+            print(f"[warn] swissALTI3D: tile {e_km}-{n_km} not found in years {years}")
+
+    if not src_datasets:
+        print("[warn] swissALTI3D: no tiles could be downloaded for this bbox (after per-tile fallback)")
+        return None
+
+    # mosaic to exact bbox at target_res (0.5 m -> 512x512 for 256m)
+    mosaic, out_transform = merge(
+        src_datasets,
+        bounds=bbox_2056,
+        res=target_res,
+        nodata=-9999.0,
+    )
+    dem_arr = mosaic[0]  # (1, H, W) -> (H, W)
+    height, width = dem_arr.shape
+    side_px = width
+    res_str = f"{int(round(target_res * 100)):03d}"
+    dem_stem = f"alti3d_chip{side_px}_gsd{res_str}"
+    dem_path = out_dir / f"{dem_stem}.tif"
+    with rasterio.open(
+        dem_path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=1,
+        dtype="float32",
+        crs="EPSG:2056",
+        transform=out_transform,
+        nodata=-9999.0,
+        compress="deflate",
+        tiled=True,
+    ) as dst:
+        dst.write(dem_arr, 1)
+
+    # make a viewable PNG (no more “all black”)
+    valid = dem_arr != -9999.0
+    if valid.any():
+        vmin = float(dem_arr[valid].min())
+        vmax = float(dem_arr[valid].max())
+        if vmax > vmin:
+            scaled = np.zeros_like(dem_arr, dtype=np.uint8)
+            scaled[valid] = ((dem_arr[valid] - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+        else:
+            scaled = np.zeros_like(dem_arr, dtype=np.uint8)
+    else:
+        scaled = np.zeros_like(dem_arr, dtype=np.uint8)
+
+    dem_png  = out_dir / f"{dem_stem}.png"
+    with rasterio.open(
+        dem_png,
+        "w",
+        driver="PNG",
+        width=width,
+        height=height,
+        count=1,
+        dtype="uint8",
+    ) as dst:
+        dst.write(scaled, 1)
+
+    coverage = float((dem_arr != -9999.0).mean()) * 100.0
+    print(
+        f"[ok] swissALTI3D DEM saved: {dem_path} "
+        f"(res={target_res} m, size=({width}x{height}), coverage={coverage:.1f}%)"
+    )
+
+    return {
+        "dem_tif": str(dem_path),
+        "dem_png": str(dem_png),
+        "dem_resolution_m": target_res,
+        "dem_coverage_percent": coverage,
+        "tiles": used_info,
+    }
+
+
 # ----------------- main -----------------
 def main():
     ap = argparse.ArgumentParser(description="Fetch fixed-chip SwissImage patch for a mission using synced GPS.")
     ap.add_argument("--mission", required=True, help="Mission alias or UUID")
     ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
-    ap.add_argument("--config", default=None, help="Path to config/swissimg.yaml (default: repo config)")
+    ap.add_argument("--config", default=None, help="Path to config/imagery.yaml (default: repo config)")
     # optional overrides
     ap.add_argument("--chip-px", type=int, help="Override chip_px")
     ap.add_argument("--gsd-m", type=float, help="Override gsd_m")
@@ -182,17 +361,20 @@ def main():
     cfg_path = Path(args.config) if args.config else (P["REPO_ROOT"] / "config" / "imagery.yaml")
     cfg = load_yaml(cfg_path)
 
-    chip_px = int(args.chip_px or cfg.get("chip_px", 1024))
-    gsd_m   = float(args.gsd_m   or cfg.get("gsd_m", 0.25))
+    # your yaml has "fetch: {...}"
+    fetch_cfg = cfg.get("fetch", cfg)
 
-    wms = cfg.get("wms", {})
+    chip_px = int(args.chip_px or fetch_cfg.get("chip_px", 1024))
+    gsd_m   = float(args.gsd_m   or fetch_cfg.get("gsd_m", 0.25))
+
+    wms = fetch_cfg.get("wms", {})
     WMS_URL   = wms.get("url", "https://wms.geo.admin.ch/")
     WMS_LAYER = wms.get("layer", "ch.swisstopo.swissimage")
     WMS_VER   = wms.get("version", "1.3.0")
     WMS_FMT   = wms.get("format", "image/jpeg")
     MAX_WMS_PX = int(wms.get("max_px", 10000))
 
-    out_cfg = cfg.get("out", {})
+    out_cfg = fetch_cfg.get("out", {})
     subdir = out_cfg.get("subdir", "swissimg")
     prefix = out_cfg.get("prefix", "")
 
@@ -206,7 +388,7 @@ def main():
     bbox2056 = build_centered_chip_2056(pts_ll, chip_px, gsd_m)
     width_px = height_px = int(chip_px)
 
-    # Fetch
+    # Fetch SwissImage
     if width_px <= MAX_WMS_PX and height_px <= MAX_WMS_PX:
         rgb = _wms_getmap(bbox2056, width_px, height_px, WMS_URL, WMS_LAYER, WMS_VER, WMS_FMT)
     else:
@@ -222,7 +404,13 @@ def main():
     save_geotiff_rgb8(tif_path, rgb, bbox2056)
     save_png_rgb8(png_path, rgb)
 
-    # sidecar meta
+    # swissALTI3D (DEM) – best effort, no crash if empty
+    alti_cfg = fetch_cfg.get("alti") or cfg.get("alti") or {}
+    dem_meta = None
+    if alti_cfg:
+        dem_meta = fetch_swissalti3d_dem(bbox2056, alti_cfg, out_dir, stem)
+
+    # sidecar meta (image)
     meta = {
         "mission_id": mission_id,
         "folder": short,
@@ -234,6 +422,7 @@ def main():
         "tif": str(tif_path),
         "png": str(png_path),
         "wms": {"url": WMS_URL, "layer": WMS_LAYER, "version": WMS_VER, "format": WMS_FMT},
+        "dem": dem_meta,
     }
     (out_dir / f"{stem}.json").write_text(json.dumps(meta, indent=2))
     print(f"[ok] Saved:\n  {tif_path}\n  {png_path}")
