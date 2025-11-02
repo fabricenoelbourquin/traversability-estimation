@@ -34,10 +34,8 @@ import yaml
 from transformers import AutoImageProcessor, AutoModel
 
 # ---------- project paths ----------
-try:
-    from utils.paths import get_paths
-except ImportError:
-    from paths import get_paths
+
+from utils.paths import get_paths
 
 P = get_paths()
 VALID_IMG_EXT = (".tif", ".tiff", ".png", ".jpg", ".jpeg")

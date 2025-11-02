@@ -19,3 +19,5 @@ extras:
   stim: "stim320_imu"
   stim320: "stim320_imu"
   anymal_imu: "anymal_imu"
+  camera: "hdr_front"
+  zed: "zed2i_images"

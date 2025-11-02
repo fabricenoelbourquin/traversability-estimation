@@ -9,10 +9,13 @@ Arguments:
 --dry-run: optional, Print commands, do not download
 
 Examples:
-  python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e
-  python src/download_bag.py --mission-id e97e35ad-... --mission-name ETH-1
+  python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e --mission-name ETH-1
   python src/download_bag.py --mission-id ... --extra adis locomotion dlio --dry-run
-  python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e --mission-name ETH-1 --dry-run 
+  python src/download_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e --mission-name ETH-1 --dry-run
+  python src/download_bag.py \
+  --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e \
+  --mission-name ETH-1 \
+  --extra camera
 """
 
 from __future__ import annotations
