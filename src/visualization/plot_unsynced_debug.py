@@ -71,7 +71,7 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    tables_dir, _, mission_id, short, display_name = resolve_mission(args.mission, P)
+    tables_dir, _, mission_id, _, display_name = resolve_mission(args.mission, P)
     specs = parse_specs(args.plot)
 
     out_base = P["REPO_ROOT"] / "reports" / display_name
