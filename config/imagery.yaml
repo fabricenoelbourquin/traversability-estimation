@@ -8,7 +8,7 @@ fetch:
     format: "image/jpeg"
     max_px: 10000
   out:
-    subdir: "swissimg"
+    subdir: "swisstopo"
     prefix: ""
   
   alti:

@@ -235,7 +235,7 @@ def main():
 
     # 5) SwissImage patch
     if not skip_swissimg:
-        sh([py, "src/get_swissimg_patch.py", *ident_either()])
+        sh([py, "src/get_swisstopo_patch.py", *ident_either()])
     else:
         print(">> Skipping SwissImage patch.")
 
