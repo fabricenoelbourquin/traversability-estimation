@@ -8,7 +8,7 @@ the corresponding 1 km swissALTI3D tiles from data.geo.admin.ch and mosaicking
 them to the chip extent.
 
 Saves:
-  <DATA_ROOT>/maps/<mission_folder>/swissimg/
+  <DATA_ROOT>/maps/<mission_folder>/swisstopo/
     swissimg_chip{chip_px}_gsd{gsd}_rgb8.tif
     swissimg_chip{chip_px}_gsd{gsd}_rgb8.png
     swissimg_chip{chip_px}_gsd{gsd}.json
@@ -34,6 +34,7 @@ import rasterio
 from rasterio.io import MemoryFile
 from rasterio.merge import merge
 from rasterio.transform import from_bounds
+from affine import Affine
 
 # ---- paths helper (your existing one) ----
 from utils.paths import get_paths
@@ -277,14 +278,29 @@ def fetch_swissalti3d_dem(
         print("[warn] swissALTI3D: no tiles could be downloaded for this bbox (after per-tile fallback)")
         return None
 
-    # mosaic to exact bbox at target_res (0.5 m -> 512x512 for 256m)
-    mosaic, out_transform = merge(
+    overscan_px = 1  # how many pixels extra on each side to avoid edge artifacts due to grid misalignment
+    overscan_m  = overscan_px * target_res
+    minx, miny, maxx, maxy = bbox_2056
+
+    # 1) request a slightly bigger area
+    bigger_bounds = (
+        minx - overscan_m,
+        miny - overscan_m,
+        maxx + overscan_m,
+        maxy + overscan_m,
+    )
+
+    mosaic, bigger_transform = merge(
         src_datasets,
-        bounds=bbox_2056,
+        bounds=bigger_bounds,
         res=target_res,
         nodata=-9999.0,
     )
-    dem_arr = mosaic[0]  # (1, H, W) -> (H, W)
+    big_arr = mosaic[0] # shape: (512 + 2) x (512 + 2) = 514 x 514, (1, H, W) -> (H, W)
+    # 2) crop back to the original 512x512 (remove 1 px from each side)
+    dem_arr = big_arr[overscan_px:-overscan_px, overscan_px:-overscan_px]
+    out_transform = bigger_transform * Affine.translation(overscan_px, overscan_px)
+
     height, width = dem_arr.shape
     side_px = width
     res_str = f"{int(round(target_res * 100)):03d}"
@@ -375,7 +391,7 @@ def main():
     MAX_WMS_PX = int(wms.get("max_px", 10000))
 
     out_cfg = fetch_cfg.get("out", {})
-    subdir = out_cfg.get("subdir", "swissimg")
+    subdir = out_cfg.get("subdir", "swisstopo")
     prefix = out_cfg.get("prefix", "")
 
     # Resolve mission + synced parquet
