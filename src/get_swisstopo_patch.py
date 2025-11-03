@@ -16,6 +16,9 @@ Saves:
   and if enabled in imagery.yaml (fetch.alti.mode: dem|both):
     swissimg_chip{chip_px}_gsd{gsd}_dem{dem_res}m.tif
     swissimg_chip{chip_px}_gsd{gsd}_dem{dem_res}m.png
+Usage:
+    python src/get_swisstopo_patch.py --mission <mission>
+    e.g. python src/get_swisstopo_patch.py --mission ETH-1
 """
 
 from __future__ import annotations
@@ -38,23 +41,13 @@ from affine import Affine
 
 # ---- paths helper (your existing one) ----
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 P = get_paths()
 
 # ----------------- helpers -----------------
 def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
-
-def resolve_mission(mission: str):
-    """Return (tables_dir, synced_dir, mission_id, short_folder)."""
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    mission_id = meta.get("_aliases", {}).get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    folder = entry["folder"]
-    return (P["TABLES"] / folder, P["SYNCED"] / folder, mission_id, folder)
 
 def pick_synced_parquet(sync_dir: Path, hz: int | None) -> Path:
     if hz is not None:
@@ -395,7 +388,8 @@ def main():
     prefix = out_cfg.get("prefix", "")
 
     # Resolve mission + synced parquet
-    _, sync_dir, mission_id, short = resolve_mission(args.mission)
+    mp = resolve_mission(args.mission, P)
+    sync_dir, mission_id, short = mp.synced, mp.mission_id, mp.folder
     synced_path = pick_synced_parquet(sync_dir, args.hz)
     df = pd.read_parquet(synced_path)
     pts_ll = get_ll_points_from_synced(df)

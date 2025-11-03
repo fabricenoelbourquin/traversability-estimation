@@ -29,6 +29,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 def parse_specs(specs: List[str]) -> Dict[str, List[str]]:
     """
@@ -46,23 +47,6 @@ def parse_specs(specs: List[str]) -> Dict[str, List[str]]:
         out[table] = cols_list
     return out
 
-def resolve_mission(mission: str, P) -> Tuple[Path, Path, str, str]:
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    alias_map = meta.get("_aliases", {})
-    mission_id = alias_map.get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    short = entry["folder"]
-    if mission in alias_map and alias_map[mission] == mission_id:
-        display = mission
-    else:
-        rev = [a for a, mid in alias_map.items() if mid == mission_id]
-        display = rev[0] if rev else short
-
-    return (P["TABLES"] / short), (P["SYNCED"] / short), mission_id, short, display
-
 def main():
     ap = argparse.ArgumentParser(description="Plot raw (unsynced) tables for debugging.")
     ap.add_argument("--mission", required=True, help="Mission alias or UUID")
@@ -71,7 +55,8 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    tables_dir, _, mission_id, _, display_name = resolve_mission(args.mission, P)
+    mp = resolve_mission(args.mission, P)
+    tables_dir, mission_id, display_name = mp.tables, mp.mission_id, mp.display
     specs = parse_specs(args.plot)
 
     out_base = P["REPO_ROOT"] / "reports" / display_name

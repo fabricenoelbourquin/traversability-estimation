@@ -35,6 +35,7 @@ import yaml
 # --- path helpers ---
 
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 # Resolve common repo paths once at import time. Expects keys:
 # RAW / TABLES / SYNCED / REPO_ROOT / MISSIONS_JSON
@@ -46,45 +47,6 @@ def load_yaml(p: Path) -> dict:
     Load a YAML file if it exists, else return an empty dict.
     """
     return yaml.safe_load(p.read_text()) if p.exists() else {}
-
-def resolve_mission_folder(mission: str) -> Path:
-    """
-    Resolve a mission alias or UUID into:
-      (tables_dir, synced_out_dir, mission_id)
-
-    Looks up config/missions.json:
-      - If `mission` is an alias, map it to its mission_id via _aliases.
-      - Otherwise treat `mission` as the mission_id.
-    Then uses the mission entry's 'folder' to construct data paths.
-
-    Raises:
-      FileNotFoundError if missions.json is missing or tables dir not found.
-      KeyError if mission/alias is not in missions.json.
-    """
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    if not mj.exists():
-        raise FileNotFoundError(f"{mj} not found (run download first or create manually).")
-    meta = json.loads(mj.read_text())
-    mission_id = mission
-    # Map alias -> mission_id if needed
-    aliases = meta.get("_aliases", {})
-    if mission in aliases:
-        mission_id = aliases[mission]
-    # Resolve folder
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not in missions.json")
-    folder = entry["folder"]
-    tables_dir = P["TABLES"] / folder
-    if not tables_dir.exists():
-        raise FileNotFoundError(f"{tables_dir} not found. Did you run extract?")
-    # pick display name
-    if mission in aliases and aliases[mission] == mission_id:
-        display_name = mission
-    else:
-        rev = [a for a, mid in aliases.items() if mid == mission_id]
-        display_name = rev[0] if rev else folder
-    return tables_dir, (P["SYNCED"] / folder), mission_id, display_name
 
 def load_df(path: Path) -> Optional[pd.DataFrame]:
     """
@@ -240,7 +202,8 @@ def main():
     smooth_win_s = float(sync_cfg.get("smooth", {}).get("speed_window_s", 0.0))
 
     # Resolve mission -> tables dir, output dir, canonical mission_id
-    tables_dir, out_dir, mission_id, display_name = resolve_mission_folder(args.mission)
+    mp = resolve_mission(args.mission, P)
+    tables_dir, out_dir, mission_id, display_name = mp.tables, mp.synced, mp.mission_id, mp.display
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load available tables

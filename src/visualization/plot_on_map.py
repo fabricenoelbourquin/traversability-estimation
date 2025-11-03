@@ -40,41 +40,11 @@ SRC_ROOT = THIS_FILE.parents[1]    # .../src
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 P = get_paths()
 
 # ----------------- helpers -----------------
-def resolve_mission(mission: str) -> Tuple[Path, Path, str, str, str]:
-    """
-    Return (tables_dir, synced_dir, mission_id, short_folder, display_name).
-
-    display_name preference:
-      1) If the user passed an alias that exists -> that alias
-      2) Else, any alias that maps to this mission_id (first found)
-      3) Else, fall back to the mission's 'folder' (short)
-    """
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    alias_map = meta.get("_aliases", {})
-
-    # resolve mission id (allow alias or id)
-    mission_id = alias_map.get(mission, mission)
-
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-
-    short = entry["folder"]
-
-    # choose display name as alias if possible
-    if mission in alias_map and alias_map[mission] == mission_id:
-        display = mission
-    else:
-        # find any alias that maps to this id
-        rev = [a for a, mid in alias_map.items() if mid == mission_id]
-        display = rev[0] if len(rev) > 0 else short
-
-    return (P["TABLES"] / short, P["SYNCED"] / short, mission_id, short, display)
 
 def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
     """
@@ -93,9 +63,9 @@ def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
         return metrics[0]
     raise FileNotFoundError(f"No synced *_metrics parquet found in {sync_dir}")
 
-def latest_swissimg_paths(short: str) -> Tuple[Path, Path]:
+def latest_swissimg_paths(map_dir: Path) -> Tuple[Path, Path]:
     """Return (tif_path, png_path) for the newest swissimg chip."""
-    d = P["MAPS"] / short / "swisstopo"
+    d = map_dir / "swisstopo"
     tifs = sorted(d.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not tifs:
         raise FileNotFoundError(f"No swissimg *_rgb8.tif in {d}")
@@ -189,9 +159,10 @@ def main():
     args = ap.parse_args()
 
     # Paths & meta
-    _, sync_dir, mission_id, short, display_name = resolve_mission(args.mission)
+    mp = resolve_mission(args.mission, P)
+    sync_dir, short, display_name, map_dir = mp.synced, mp.folder, mp.display, mp.maps
     synced = pick_synced(sync_dir, args.hz)
-    tif_path, png_raw = latest_swissimg_paths(short)
+    tif_path, png_raw = latest_swissimg_paths(map_dir)
 
     # Load metric + GPS once
     df = pd.read_parquet(synced)

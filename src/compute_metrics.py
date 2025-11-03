@@ -23,6 +23,7 @@ import yaml, pandas as pd
 
 # paths helper
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 from metrics import compute, REGISTRY
 
@@ -41,17 +42,6 @@ def resolve_synced_file(sync_dir: Path, hz: int | None) -> Path:
         raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
     return cands[0]
 
-def resolve_mission_folder(mission: str, P) -> tuple[Path, Path, str]:
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    aliases = meta.get("_aliases", {})
-    mission_id = aliases.get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    folder = entry["folder"]
-    return (P["TABLES"] / folder), (P["SYNCED"] / folder), mission_id
-
 def infer_hz_from_path(p: Path) -> int | None:
     m = re.search(r"synced_(\d+)Hz\.parquet$", p.name)
     return int(m.group(1)) if m else None
@@ -66,7 +56,8 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    _, sync_dir, mission_id = resolve_mission_folder(args.mission, P)
+    mp = resolve_mission(args.mission, P)
+    sync_dir = mp.synced
     in_parquet = resolve_synced_file(sync_dir, args.hz)
 
     cfg = load_yaml(P["REPO_ROOT"] / "config" / "metrics.yaml")  # for max_speed_mps, etc.
