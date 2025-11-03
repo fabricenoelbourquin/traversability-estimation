@@ -36,6 +36,7 @@ from transformers import AutoImageProcessor, AutoModel
 # ---------- project paths ----------
 
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 P = get_paths()
 VALID_IMG_EXT = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
@@ -255,40 +256,6 @@ def assign_labels_from_feats(Z: np.ndarray, kmeans_model, device: str, out_hw: t
     labels = torch.argmax(logits, dim=-1).cpu().numpy().astype(np.uint16)
     return labels
 
-# ---------- mission/image resolution ----------
-def resolve_mission_and_input(mission: Optional[str], input_path: Optional[str], out_subdir: str) -> tuple[Path, str, str, str]:
-    """
-    Returns:
-      out_dir (where outputs go),
-      chosen_input_path (string),
-      mission_id ('' if none),
-      short_folder ('' if none)
-    """
-    if input_path:
-        out_dir = Path(input_path).parent / out_subdir   # <— use configured subdir
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return out_dir, input_path, "", ""
-
-    # mission-driven
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    mission_id = meta.get("_aliases", {}).get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    short = entry["folder"]
-
-    # latest swissimg chip
-    img_dir = P["MAPS"] / short / "swisstopo"
-    cands = sorted(img_dir.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No '*_rgb8.tif' under {img_dir}. Run get_swisstopo_patch.py first or pass --input.")
-    picked = str(cands[0])
-
-    out_dir = P["MAPS"] / short / out_subdir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir, picked, mission_id, short
-
 # ---------- main ----------
 def main():
     ap = argparse.ArgumentParser(description="Infer cluster map from DINOv3 with optional STEGO head and KMeans (joblib/npz).")
@@ -338,7 +305,19 @@ def main():
     save_rgb   = args.save_rgb or bool(clu.get("save_rgb", True))
 
     # resolve mission/input (unchanged)
-    out_dir, input_path, mission_id, short = resolve_mission_and_input(args.mission, args.input, out_subdir)
+    mp = resolve_mission(args.mission, P)
+    map_dir = mp.maps
+    if args.input:
+        out_dir = Path(args.input).parent / out_subdir   # <— use configured subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        input_path = args.input
+    else:       
+        img_dir = map_dir / "swisstopo"
+        cands = sorted(img_dir.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not cands:
+            raise FileNotFoundError(f"No '*_rgb8.tif' under {img_dir}. Run get_swisstopo_patch.py first or pass --input.")
+        input_path = str(cands[0])
+        out_dir = map_dir / out_subdir
 
     # device + models
     device = pick_device(args.device)

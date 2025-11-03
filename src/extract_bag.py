@@ -18,6 +18,7 @@ import numpy as np
 import yaml
 
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 from rosbags.highlevel import AnyReader
 
@@ -41,29 +42,6 @@ def repo_root() -> Path:
 def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
-
-def resolve_mission(missions: dict, mission: str | None, mission_id: str | None) -> tuple[str, str]:
-    """
-    Returns (mission_id, mission_folder).
-    Allows addressing by alias (missions['_aliases'][name] -> mission_id).
-    """
-    if not mission and not mission_id:
-        raise SystemExit("Provide --mission (alias) or --mission-id.")
-    if mission and mission_id:
-        raise SystemExit("Provide either --mission or --mission-id, not both.")
-
-    if mission:
-        mid = missions.get("_aliases", {}).get(mission)
-        if not mid:
-            raise SystemExit(f"Alias '{mission}' not found in config/missions.json")
-        entry = missions.get(mid, {})
-        folder = entry.get("folder") or mid.split("-")[0]
-        return mid, folder
-
-    # mission_id path:
-    entry = missions.get(mission_id, {})
-    folder = entry.get("folder") or (mission_id.split("-")[0])
-    return mission_id, folder
 
 def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
     """
@@ -233,8 +211,8 @@ def main():
     P = get_paths()
     rr = P["REPO_ROOT"]
     missions = load_missions_json(rr)
-    mission_id, mission_folder = resolve_mission(missions, args.mission, args.mission_id)
-
+    mp = resolve_mission(args.mission, P)
+    mission_id, mission_folder = mp.mission_id, mp.folder
     raw_dir = P["RAW"] / mission_folder
     out_dir = P["TABLES"] / mission_folder
     out_dir.mkdir(parents=True, exist_ok=True)

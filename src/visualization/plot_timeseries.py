@@ -34,7 +34,7 @@ SRC_ROOT = THIS_FILE.parents[1]    # .../src
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
-
+from utils.missions import resolve_mission
 
 # optional: use registry to detect metric names if present
 try:
@@ -54,27 +54,6 @@ EXCLUDE_DEFAULT = {
     "v_cmd_x", "v_cmd_y", "w_cmd_z",
     "v_cmd", "v_actual", "speed",  # convenience/raw
 }
-
-def _resolve_mission(mission: str, P) -> tuple[Path, Path, str, str]:
-    """
-    Return (tables_dir, sync_dir, mission_id, short_folder).
-    """
-    mj = P["REPO_ROOT"] / "config" / "missions.json"
-    if not mj.exists():
-        raise FileNotFoundError(f"{mj} not found.")
-    meta = json.loads(mj.read_text())
-    alias_map = meta.get("_aliases", {})
-    mission_id = alias_map.get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    short = entry["folder"]
-    if mission in alias_map and alias_map[mission] == mission_id:
-        display = mission
-    else:
-        rev = [a for a, mid in alias_map.items() if mid == mission_id]
-        display = rev[0] if rev else short
-    return (P["TABLES"] / short), (P["SYNCED"] / short), mission_id, short, display
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
     # If Hz specified, try metrics file first
@@ -138,7 +117,9 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    _, sync_dir, mission_id, short, display_name = _resolve_mission(args.mission, P)
+    mp = resolve_mission(args.mission, P)
+    sync_dir, mission_id, display_name = mp.synced, mp.mission_id, mp.display
+
     synced_path = _pick_synced(sync_dir, args.hz)
 
     df = pd.read_parquet(synced_path)

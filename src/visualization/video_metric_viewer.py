@@ -31,6 +31,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 
 def filter_valid_rosbags(paths: list[Path]) -> list[Path]:
@@ -48,30 +49,6 @@ def filter_valid_rosbags(paths: list[Path]) -> list[Path]:
         except OSError:
             continue
     return keep
-
-
-def _resolve_mission(mission: str, P):
-    mj = Path(P["REPO_ROOT"]) / "config" / "missions.json"
-    meta = json.loads(mj.read_text())
-    alias_map = meta.get("_aliases", {})
-    mission_id = alias_map.get(mission, mission)
-    entry = meta.get(mission_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission}' not found in missions.json")
-    folder = entry["folder"]
-
-    # what's shown in filename
-    if mission in alias_map and alias_map[mission] == mission_id:
-        display = mission
-    else:
-        rev = [a for a, mid in alias_map.items() if mid == mission_id]
-        display = rev[0] if rev else folder
-
-    tables_dir = Path(P["TABLES"]) / folder
-    synced_dir = Path(P["SYNCED"]) / folder
-    raw_dir = Path(P["RAW"]) / folder
-    return tables_dir, synced_dir, raw_dir, mission_id, folder, display
-
 
 def pick_synced_metrics(synced_dir: Path, hz: Optional[int]) -> Path:
     if hz is not None:
@@ -166,7 +143,8 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    _, synced_dir, raw_dir, _, _, display_name = _resolve_mission(args.mission, P)
+    mp = resolve_mission(args.mission, P)
+    raw_dir, synced_dir, display_name = mp.raw, mp.synced, mp.display
     out_base = Path(P["REPO_ROOT"]) / "reports" / display_name
     out_base.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else (out_base / f"{display_name}_metric_visual_camera.mp4")

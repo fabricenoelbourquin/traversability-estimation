@@ -19,6 +19,7 @@ _SRC_ROOT = _THIS.parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 from utils.paths import get_paths
+from utils.missions import resolve_mission
 
 def sh(cmd: list[str]) -> None:
     print("\n$ " + " ".join(cmd))
@@ -28,28 +29,6 @@ def yes(x) -> bool:
     return bool(x) and str(x).lower() not in {"0", "false", "no", "off"}
 
 # ---------- helpers for corruption handling ----------
-def _resolve_short_folder(mission_id: str, mission_name: str | None, repo_root: Path) -> tuple[str, str]:
-    """
-    Return (short_folder, display_name) for the mission using config/missions.json.
-    display_name prefers the alias (mission_name) if it maps to mission_id.
-    """
-    mj = repo_root / "config" / "missions.json"
-    meta = yaml.safe_load(mj.read_text()) if mj.suffix in {".yaml", ".yml"} else __import__("json").loads(mj.read_text())
-    alias_map = meta.get("_aliases", {})
-    # If name given and maps to some id, prefer that id; else mission_id
-    resolved_id = alias_map.get(mission_name, mission_id) if mission_name else mission_id
-    entry = meta.get(resolved_id)
-    if not entry:
-        raise KeyError(f"Mission '{mission_name or mission_id}' not found in missions.json")
-    short = entry["folder"]
-    # choose display
-    if mission_name and alias_map.get(mission_name) == resolved_id:
-        display = mission_name
-    else:
-        # any alias pointing to this id
-        rev = [a for a, mid in alias_map.items() if mid == resolved_id]
-        display = rev[0] if rev else short
-    return short, display
 
 def _header_ok(p: Path) -> bool:
     try:
@@ -123,14 +102,10 @@ def main():
         raise ValueError("Missing required --mission-id (or set mission_id in the YAML).")
 
     P = get_paths()
-    REPO_ROOT: Path = P["REPO_ROOT"]
-    RAW_ROOT: Path = P["RAW"]
-    TABLES_ROOT: Path = P["TABLES"]
 
     # Find the mission folder in RAW to scan/delete bad bags if needed
-    short_folder, display_name = _resolve_short_folder(mission_id, mission_name, REPO_ROOT)
-    raw_dir = RAW_ROOT / short_folder
-    tables_dir = TABLES_ROOT / short_folder
+    mp = resolve_mission(args.mission_id, P)
+    raw_dir, tables_dir, display_name = mp.raw, mp.tables, mp.display
 
 
     # Helper: for stages that accept either --mission OR --mission-id (but not both)
