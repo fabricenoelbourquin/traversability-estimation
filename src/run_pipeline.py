@@ -1,3 +1,10 @@
+"""
+Full pipeline runner for a single mission (sequential).
+Usage:
+    python src/run_pipeline.py --mission-id <UUID> [--mission-name <alias>]
+    e.g. python src/run_pipeline.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e --mission-name ETH-1
+"""
+
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse

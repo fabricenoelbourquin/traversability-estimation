@@ -7,7 +7,7 @@ align:
 
 interpolate:
   method: linear         # linear | time (if indexed) | pad
-  limit_seconds: 2.0     # don't bridge longer gaps
+  limit_seconds: 0.1     # don't bridge longer gaps
 
 lag:
   cmd_ms: 150            # shift cmd_vel forward to match actuation

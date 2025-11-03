@@ -1,3 +1,9 @@
+"""
+Combine camera video with metric plot into a single video (vertical stack).
+Usage:
+    python src/visualization/video_metric_viewer.py --mission <mission>
+    e.g. python src/visualization/video_metric_viewer.py --mission ETH-1
+"""
 #!/usr/bin/env python3
 from __future__ import annotations
 
@@ -24,7 +30,7 @@ SRC_ROOT = THIS.parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from utils.paths import get_paths  # noqa: E402
+from utils.paths import get_paths
 
 
 def filter_valid_rosbags(paths: list[Path]) -> list[Path]:

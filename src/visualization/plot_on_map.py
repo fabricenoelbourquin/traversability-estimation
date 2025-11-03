@@ -95,7 +95,7 @@ def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
 
 def latest_swissimg_paths(short: str) -> Tuple[Path, Path]:
     """Return (tif_path, png_path) for the newest swissimg chip."""
-    d = P["MAPS"] / short / "swissimg"
+    d = P["MAPS"] / short / "swisstopo"
     tifs = sorted(d.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not tifs:
         raise FileNotFoundError(f"No swissimg *_rgb8.tif in {d}")
