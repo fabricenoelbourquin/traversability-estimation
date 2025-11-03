@@ -279,10 +279,10 @@ def resolve_mission_and_input(mission: Optional[str], input_path: Optional[str],
     short = entry["folder"]
 
     # latest swissimg chip
-    img_dir = P["MAPS"] / short / "swissimg"
+    img_dir = P["MAPS"] / short / "swisstopo"
     cands = sorted(img_dir.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not cands:
-        raise FileNotFoundError(f"No '*_rgb8.tif' under {img_dir}. Run get_swissimg_patch.py first or pass --input.")
+        raise FileNotFoundError(f"No '*_rgb8.tif' under {img_dir}. Run get_swisstopo_patch.py first or pass --input.")
     picked = str(cands[0])
 
     out_dir = P["MAPS"] / short / out_subdir
