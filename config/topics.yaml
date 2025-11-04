@@ -1,0 +1,4 @@
+frames:
+  world: enu_origin   # your fixed world frame for ENU
+  base:  base         # base or anymal/base depending on bag
+
