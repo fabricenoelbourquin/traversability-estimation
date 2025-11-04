@@ -128,6 +128,30 @@ def filter_valid_rosbags(paths: list[Path]) -> list[Path]:
             pass
     return keep
 
+# --- TF / quaternion helpers ---
+
+def _sanitize_frame(name: str) -> str:
+    return name[1:] if name.startswith("/") else name
+
+def _quat_mul(q1, q2):
+    w1,x1,y1,z1 = q1; w2,x2,y2,z2 = q2
+    return (
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    )
+
+def _quat_conj(q):
+    w,x,y,z = q
+    return (w, -x, -y, -z)
+
+def _quat_norm(q):
+    w,x,y,z = q
+    n = float(np.sqrt(w*w + x*x + y*y + z*z))
+    if n == 0: return q
+    return (w/n, x/n, y/n, z/n)
+
 # --------------------- extractors ---------------------
 
 def extract_cmd_vel(reader: AnyReader, topic: str) -> pd.DataFrame:
@@ -196,6 +220,114 @@ def extract_imu(reader: AnyReader, topic: str) -> pd.DataFrame:
         })
     return pd.DataFrame(rows).sort_values("t")
 
+def extract_base_orientation_from_tf(
+    reader: AnyReader,
+    world_frame: str,
+    base_frame: str,
+) -> pd.DataFrame:
+    """
+    Build q_WB (base→world) from /tf and /tf_static.
+    Works whether hops come as a->b or only b->a (uses inverse as needed).
+    (uses inverse)
+    Emits a sparse time-series (records when q_WB changes).
+    Time 't' uses the bag timestamp for consistency with other tables.
+    """
+    # collect all TF samples
+    entries = []
+    for conn in reader.connections:
+        if ("TFMessage" in conn.msgtype or "tfMessage" in conn.msgtype) and conn.topic in ("/tf", "/tf_static"):
+            is_static = (conn.topic == "/tf_static")
+            for _, t, raw in reader.messages(connections=[conn]):
+                msg = reader.deserialize(raw, conn.msgtype)
+                transforms = getattr(msg, "transforms", None)
+                if not transforms:
+                    continue
+                for tr in transforms:
+                    parent = _sanitize_frame(getattr(getattr(tr, "header", None), "frame_id", "") or "")
+                    child  = _sanitize_frame(getattr(tr, "child_frame_id", "") or "")
+                    if not parent or not child:
+                        continue
+                    rot = getattr(getattr(tr, "transform", None), "rotation", None)
+                    if rot is None: 
+                        continue
+                    q = (float(rot.w), float(rot.x), float(rot.y), float(rot.z))
+                    entries.append((bool(is_static), float(t_sec(t)), parent, child, q))
+
+    if not entries:
+        return pd.DataFrame(columns=["t","qw","qx","qy","qz"])
+
+    # process statics first, then dynamics by time
+    entries.sort(key=lambda e: (0 if e[0] else 1, e[1]))
+
+    latest = {}          # (parent, child) -> quat(parent->child)
+    adj = {}             # undirected adjacency for BFS
+
+    def _add_edge(p, c, q):
+        latest[(p,c)] = q
+        adj.setdefault(p, set()).add(c)
+        adj.setdefault(c, set()).add(p)
+
+    def _compose_q(a: str, b: str):
+        # BFS on current adj to get path a->...->b
+        if a not in adj or b not in adj:
+            return None
+        prev = {a: None}
+        q = [a]
+        from collections import deque
+        dq = deque(q)
+        while dq:
+            u = dq.popleft()
+            if u == b: break
+            for v in adj.get(u, ()):
+                if v not in prev:
+                    prev[v] = u
+                    dq.append(v)
+        if b not in prev:
+            return None
+        # reconstruct path and compose
+        path = []
+        u = b
+        while u is not None:
+            path.append(u)
+            u = prev[u]
+        path.reverse()
+        qtot = (1.0, 0.0, 0.0, 0.0)
+        for x, y in zip(path[:-1], path[1:]):   # desired hop x->y
+            q_xy = latest.get((x,y))
+            if q_xy is None:
+                q_yx = latest.get((y,x))
+                if q_yx is None:
+                    return None
+                q_xy = _quat_conj(q_yx)
+            qtot = _quat_mul(qtot, q_xy)
+        qtot = _quat_norm(qtot)
+        if qtot[0] < 0.0:  # sign-canonicalize
+            qtot = tuple(-c for c in qtot)
+        return qtot
+
+    rows = []
+    last_q = None
+    wf = _sanitize_frame(world_frame)
+    bf = _sanitize_frame(base_frame)
+
+    for is_static, t, parent, child, q in entries:
+        _add_edge(parent, child, q)
+        q_WB = _compose_q(wf, bf)
+        if q_WB is None:
+            continue
+        if is_static and rows:
+            continue
+        if last_q is not None:
+            # skip if identical (including q ~ -q)
+            same = (np.allclose(q_WB, last_q, atol=1e-6) or
+                    np.allclose(q_WB, tuple(-c for c in last_q), atol=1e-6))
+            if same:
+                continue
+        last_q = q_WB
+        rows.append({"t": t, "qw": q_WB[0], "qx": q_WB[1], "qy": q_WB[2], "qz": q_WB[3]})
+
+    return pd.DataFrame(rows).sort_values("t").reset_index(drop=True)
+
 # --------------------- main ---------------------
 
 def main():
@@ -254,6 +386,12 @@ def main():
                 print(f"{k:>8}: {topics[k]}")
             else:
                 print(f"{k:>8}: (not found)")
+        
+        # Frames from topics.yaml (optional; falls back to defaults)
+        frames_cfg = (topics_cfg or {}).get("frames", {}) if topics_cfg else {}
+        world_frame = frames_cfg.get("world", "enu_origin")
+        base_frame  = frames_cfg.get("base",  "base")
+        print(f"[info] Frames: world='{world_frame}'  base='{base_frame}'")
 
         # Extract & save
         outputs = {}
@@ -281,6 +419,22 @@ def main():
             if args.overwrite or not path.exists():
                 df.to_parquet(path, index=False)
             outputs["imu"] = {"rows": int(len(df)), "path": str(path)}
+        # --- Extract base orientation q_WB (base→world) from TF and save as a table
+        try:
+            df_q = extract_base_orientation_from_tf(reader, world_frame, base_frame)
+        except Exception as e:
+            df_q = pd.DataFrame(columns=["t","qw","qx","qy","qz"])
+            print(f"[warn] TF orientation extraction failed: {e}")
+
+        if len(df_q):
+            path = out_dir / "base_orientation.parquet"
+            if args.overwrite or not path.exists():
+                df_q.to_parquet(path, index=False)
+            outputs["base_orientation"] = {"rows": int(len(df_q)), "path": str(path),
+                                           "world_frame": world_frame, "base_frame": base_frame}
+        else:
+            print("[warn] No TF-based orientation recovered (q_WB).")
+
 
     # Save per-mission metadata
     topics_used = {

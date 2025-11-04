@@ -210,7 +210,8 @@ def main():
     df_cmd  = load_df(tables_dir / "cmd_vel.parquet")
     df_odom = load_df(tables_dir / "odom.parquet")
     df_gps  = load_df(tables_dir / "gps.parquet")
-    df_imu  = load_df(tables_dir / "imu.parquet")  # optional
+    df_imu  = load_df(tables_dir / "imu.parquet")
+    df_qwb  = load_df(tables_dir / "base_orientation.parquet")
 
     dfs = [d for d in [df_cmd, df_odom, df_gps, df_imu] if d is not None]
 
@@ -233,6 +234,15 @@ def main():
         synced = asof_join(synced, df_gps, direction, tol_s)
     if df_imu is not None:
         synced = asof_join(synced, df_imu, direction, tol_s)
+    if df_qwb is not None and len(df_qwb):
+        # rename to a canonical block so we don’t clash with odom/imu quats
+        q = df_qwb.rename(columns={"qw":"qw_WB","qx":"qx_WB","qy":"qy_WB","qz":"qz_WB"})
+        synced = asof_join(synced, q[["t","qw_WB","qx_WB","qy_WB","qz_WB"]], direction, tol_s)
+        # canonicalize sign
+        if "qw_WB" in synced:
+            neg = synced["qw_WB"] < 0
+            for c in ("qw_WB","qx_WB","qy_WB","qz_WB"):
+                synced.loc[neg, c] = -synced.loc[neg, c]
 
     # Interpolate numeric gaps (bounded by limit_seconds)
     synced = interpolate_numeric(synced, interp_limit_s, interp_method)
@@ -248,6 +258,7 @@ def main():
         "odom": ["vx","vy"],
         "gps": ["lat","lon"],
         "imu": ["roll","pitch","yaw"],
+        "qwb": ["qw_WB","qx_WB","qy_WB","qz_WB"],
     }.items():
         present = [c for c in cols if c in synced]
         if present:
