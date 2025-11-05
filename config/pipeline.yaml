@@ -7,3 +7,19 @@ visuals:
     enabled: true
     background: both      # swissimg | cluster | both
     emb_both: true
+
+  dem3d:
+    enabled: true
+    plot_trajectory: true   # if true, pipeline passes --plot-trajectory
+
+  compare_dem_vs_quat_pitch_roll:
+    enabled: true
+    smooth_win: 1           # >1 applies smoothing; pipeline passes --smooth-win N
+
+  videos:
+    metric_viewer:
+      enabled: true
+      no_plot_orientation: false   # if true, pipeline adds --no-plot-orientation
+      overlay_pitch: true          # if true, pipeline adds --overlay-pitch
+    dem_vs_quat_pitch_roll:
+      enabled: true

@@ -87,6 +87,7 @@ def main():
     p.add_argument("--skip-swissimg", action="store_true")
     p.add_argument("--skip-cluster", action="store_true")
     p.add_argument("--skip-visuals", action="store_true")
+    p.add_argument("--skip-dem-slope", action="store_true")
     args = p.parse_args()
 
     cfg_path = Path(args.config)
@@ -121,7 +122,7 @@ def main():
     skip_swissimg = args.skip_swissimg
     skip_cluster  = args.skip_cluster
     skip_visuals  = args.skip_visuals
-
+    skip_dem_slope = args.skip_dem_slope
     py = sys.executable
 
     # 1) Download (this script accepts id + name together)
@@ -227,7 +228,13 @@ def main():
     else:
         print(">> Skipping cluster inference.")
 
-    # 7–8) Visualizations
+    # 7) Add DEM/longlat/slope
+    if not skip_dem_slope:
+        sh([py, "src/add_dem_longlat_slope.py", *ident_either()])
+    else:
+        print(">> Skipping DEM/longlat/slope.")    
+
+    # 8-11) Visualizations
     if not skip_visuals:
         vis = cfg.get("visuals", {})
 
@@ -251,6 +258,53 @@ def main():
             sh(cmd)
         else:
             print(">> Map plot disabled in config.")
+
+        # --- DEM 3D plot
+        dem3d_cfg = (vis.get("dem3d") or {})
+        if yes(dem3d_cfg.get("enabled", True)):
+            cmd = [py, "src/visualization/plot_dem_3d.py", *ident_either()]
+            # Default true; pass the flag when true (harmless if script also defaults to true)
+            if yes(dem3d_cfg.get("plot_trajectory", True)):
+                cmd.append("--plot-trajectory")
+            sh(cmd)
+        else:
+            print(">> DEM 3D plot disabled in config.")
+
+        # --- Compare DEM vs quat pitch/roll
+        cmp_cfg = (vis.get("compare_dem_vs_quat_pitch_roll") or {})
+        if yes(cmp_cfg.get("enabled", True)):
+            cmd = [py, "src/visualization/compare_dem_vs_quat_pitch_roll.py", *ident_either()]
+            smooth_win = int(cmp_cfg.get("smooth_win", 1) or 1)
+            if smooth_win != 1:
+                cmd += ["--smooth-win", str(smooth_win)]
+            sh(cmd)
+        else:
+            print(">> DEM vs quat pitch/roll comparison disabled in config.")
+
+        # --- Videos
+        vids_cfg = (vis.get("videos") or {})
+
+        # video_metric_viewer
+        vmv_cfg = (vids_cfg.get("metric_viewer") or {})
+        if yes(vmv_cfg.get("enabled", False)):  # default off to avoid heavy runs unless requested
+            cmd = [py, "src/visualization/video_metric_viewer.py", *ident_either()]
+            # no-plot-orientation: default False -> add flag only if True
+            if yes(vmv_cfg.get("no_plot_orientation", False)):
+                cmd.append("--no-plot-orientation")
+            # overlay-pitch: default True -> add flag if True
+            if yes(vmv_cfg.get("overlay_pitch", True)):
+                cmd.append("--overlay-pitch")
+            sh(cmd)
+        else:
+            print(">> Video (metric_viewer) disabled in config.")
+
+        # video_dem_vs_quat_pitch_roll
+        vdq_cfg = (vids_cfg.get("dem_vs_quat_pitch_roll") or {})
+        if yes(vdq_cfg.get("enabled", False)):  # default off
+            cmd = [py, "src/visualization/video_dem_vs_quat_pitch_roll.py", *ident_either()]
+            sh(cmd)
+        else:
+            print(">> Video (dem_vs_quat_pitch_roll) disabled in config.")
     else:
         print(">> Skipping visualizations (--skip-visuals).")
 
