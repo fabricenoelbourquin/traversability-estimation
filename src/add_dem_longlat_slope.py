@@ -170,13 +170,13 @@ def main():
     ap.add_argument("--hz", type=int, default=None, help="Which synced_<Hz>Hz.parquet to use (default: latest).")
     ap.add_argument("--dem", type=str, default=None, help="Path to DEM GeoTIFF (default: <mission>/maps/swisstopo/alti3d_chip512_gsd050.tif)")
     ap.add_argument("--min-speed", type=float, default=0.0, help="Optional future filter; unused here.")
-    ap.add_argument("--write-to", choices=["metrics", "synced"], default="metrics",
+    ap.add_argument("--write-to", choices=["metrics", "synced"], default="synced",
                     help="Append to synced_<Hz>Hz_metrics.parquet (default) or overwrite synced_<Hz>Hz.parquet.")
     args = ap.parse_args()
 
     P = get_paths()
     mp = resolve_mission(args.mission or args.mission_id, P)
-    sync_dir, short, display_name, map_dir = mp.synced, mp.folder, mp.display, mp.maps
+    sync_dir, map_dir = mp.synced, mp.maps
 
     synced_path = pick_synced_path(sync_dir, args.hz)
     if args.hz is None:
