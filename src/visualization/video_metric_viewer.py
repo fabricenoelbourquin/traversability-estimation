@@ -13,7 +13,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -34,26 +33,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.ros_time import message_time_ns
+from utils.rosbag_tools import filter_valid_rosbags
 
-
-def filter_valid_rosbags(paths: list[Path]) -> list[Path]:
-    keep: list[Path] = []
-    for p in paths:
-        if not p.is_file():
-            continue
-        if p.name.startswith("._"):
-            continue
-        try:
-            with p.open("rb") as f:
-                head = f.read(13)
-            if head.startswith(b"#ROSBAG V2.0"):
-                keep.append(p)
-        except OSError:
-            continue
-    return keep
-
-
-def pick_synced_metrics(synced_dir: Path, hz: Optional[int]) -> Path:
+def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
     if hz is not None:
         p = synced_dir / f"synced_{hz}Hz_metrics.parquet"
         if p.exists():
@@ -70,14 +53,6 @@ def pick_synced_metrics(synced_dir: Path, hz: Optional[int]) -> Path:
     if not cands:
         raise FileNotFoundError(f"No synced parquet in {synced_dir}")
     return cands[0]
-
-
-def guess_time_col(df: pd.DataFrame) -> str:
-    for c in ("stamp", "timestamp", "t", "time", "time_s", "ros_time"):
-        if c in df.columns:
-            return c
-    raise KeyError("No time column found in metrics parquet.")
-
 
 def find_camera_bag(raw_dir: Path, pattern: str, topic: str) -> Path:
     matches = sorted(raw_dir.glob(pattern))
@@ -100,7 +75,6 @@ def find_camera_bag(raw_dir: Path, pattern: str, topic: str) -> Path:
         "Tried:\n" + "\n".join(tried)
     )
 
-
 def build_plot_figure(times_s: np.ndarray, values: np.ndarray, y_label: str, width_px: int, height_px: int):
     dpi = 100
     fig_w = max(1, width_px) / dpi
@@ -121,7 +95,7 @@ def build_metric_plot_with_optional_pitch(
     metric_label: str,
     width_px: int,
     height_px: int,
-    pitch_vals: Optional[np.ndarray] = None,
+    pitch_vals: np.ndarray | None = None,
     pitch_label: str = "pitch [deg]",
 ):
     """Build the bottom metric plot. If pitch_vals is provided, overlay it on a twin Y-axis."""
@@ -169,8 +143,7 @@ def render_plot_to_array(fig, canvas, vline, cursor_t: float, target_h: int, tar
 
     return img
 
-
-def get_quaternion_block(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Prefer qw_WB..qz_WB; else fall back to qw..qz if present.
     Returns float64 arrays (normalized later by caller).
@@ -207,7 +180,7 @@ def rotate_vec_with_quat(qw, qx, qy, qz, vx, vy, vz):
     return v2  # (N,3) world
 
 
-def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert quaternion q_WB (body→world, active) to yaw-pitch-roll (ZYX) in degrees.
     World: ENU. Body: x-forward, y-left, z-up.
@@ -239,7 +212,6 @@ def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.nd
     roll  = np.arctan2(r21, r22)
 
     return np.rad2deg(yaw), np.rad2deg(pitch), np.rad2deg(roll)
-
 
 
 def main():
@@ -276,9 +248,11 @@ def main():
     df = pd.read_parquet(metrics_path)
     if args.metric not in df.columns:
         raise KeyError(f"Metric {args.metric!r} not in {metrics_path}. Available: {list(df.columns)}")
-    time_col = guess_time_col(df)
+    time_col = "t"
+    df = df.sort_values(time_col).reset_index(drop=True) # ensure sorted by time
 
     metric_raw = df[time_col]
+    # convert time column to ns
     if np.issubdtype(metric_raw.dtype, np.integer):
         metric_ns = metric_raw.to_numpy(dtype=np.int64)
     elif np.issubdtype(metric_raw.dtype, np.datetime64):
@@ -287,7 +261,7 @@ def main():
         metric_ns = (metric_raw.to_numpy(dtype=np.float64) * 1e9).astype(np.int64)
     metric_vals = df[args.metric].to_numpy(dtype=np.float64)
 
-    # Try grabbing quaternion columns if we need orientation
+    # Try grabbing quaternion columns if orientation needed
     need_orientation = args.plot_orientation or args.overlay_pitch
     have_orientation = False
     yaw_deg = pitch_deg = roll_deg = None 
@@ -305,8 +279,8 @@ def main():
 
     # 2) camera bag
     cam_bag = find_camera_bag(raw_dir, args.camera_pattern, args.camera_topic)
-
     with AnyReader([cam_bag]) as reader:
+        # choose camera topic connection(s)
         conns = [c for c in reader.connections if c.topic == args.camera_topic or c.topic == args.camera_topic + "/compressed"]
         if not conns:
             avail = {c.topic for c in reader.connections}
@@ -348,8 +322,9 @@ def main():
         total_w = cam_w_out + right_w
         total_h = final_h_left  # right column stacks to the same total height (3 * plot_h_out == final_h_left)
 
-        # ROS-time alignment
-        t0 = min(metric_ns.min(), ts0)
+        # ROS-time alignment (prefer header.stamp; fallback to log time with a one-time warning)
+        cam_ns0 = message_time_ns(msg0, ts0, stream="camera")
+        t0 = min(metric_ns.min(), cam_ns0)
         metric_t = (metric_ns - t0) / 1e9
 
         # Build metric plot (bottom-left) — possibly with pitch overlay
@@ -375,8 +350,6 @@ def main():
 
         # Build orientation plots if requested
         if have_orientation:
-            yaw_deg, pitch_deg, roll_deg = euler_zyx_from_qWB(qw, qx, qy, qz)
-
             fig_y, ax_y, vline_y, canvas_y = build_plot_figure(
                 metric_t, yaw_deg, "yaw [deg]", width_px=right_w, height_px=plot_h_out
             )
@@ -417,7 +390,7 @@ def main():
                 return left
 
         # first frame
-        combined = compose_frame(frame0, (ts0 - t0) / 1e9)
+        combined = compose_frame(frame0, (cam_ns0 - t0) / 1e9)
         vw.write(combined)
         written = 1
         if args.max_frames is not None and written >= args.max_frames:
@@ -436,7 +409,8 @@ def main():
             else:
                 frame = message_to_cvimage(msg)
 
-            t_s = (ts - t0) / 1e9
+            cam_ns = message_time_ns(msg, ts, stream="camera")
+            t_s = (cam_ns - t0) / 1e9
             combined = compose_frame(frame, t_s)
             vw.write(combined)
             written += 1
