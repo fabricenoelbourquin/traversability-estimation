@@ -1,3 +1,7 @@
+bags:
+  enabled: true
+  camera: true
+
 visuals:
   timeseries:
     enabled: true

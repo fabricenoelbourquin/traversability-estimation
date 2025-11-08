@@ -38,6 +38,48 @@ def _header_ok(p: Path) -> bool:
     except Exception:
         return False
 
+def _parse_bag_extras(bags_cfg) -> list[str]:
+    """
+    Accepts either:
+      bags:
+        enabled: true|false   # optional master switch, defaults to true
+        camera: true|false    # toggles by name
+        # ...future toggles...
+        extras: [camera, ...] # optional explicit list
+    or simply:
+      bags: [camera, ...]
+    Returns a sorted list of enabled extras.
+    """
+    if not bags_cfg:
+        return []
+
+    # master enable (defaults to True)
+    if isinstance(bags_cfg, dict) and not yes(bags_cfg.get("enabled", True)):
+        return []
+
+    extras = set()
+
+    if isinstance(bags_cfg, dict):
+        # explicit list
+        ex_list = bags_cfg.get("extras")
+        if isinstance(ex_list, (list, tuple, set)):
+            for x in ex_list:
+                if x:
+                    extras.add(str(x))
+        # per-toggle booleans (e.g., camera: true)
+        for k, v in bags_cfg.items():
+            if k == "extras" or k == "enabled":
+                continue
+            if yes(v):
+                extras.add(str(k))
+
+    elif isinstance(bags_cfg, (list, tuple, set)):
+        for x in bags_cfg:
+            if x:
+                extras.add(str(x))
+
+    return sorted(extras)
+
 def _find_bad_bags(raw_dir: Path) -> list[Path]:
     """
     Detect unreadable ROS1 bags. Ignore macOS AppleDouble files (._*).
@@ -95,7 +137,16 @@ def main():
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     with cfg_path.open("r") as f:
         cfg = yaml.safe_load(f) or {}
-
+    bags_cfg = (cfg.get("bags") or {})
+    bag_extras = _parse_bag_extras(bags_cfg)
+    def _build_download_cmd() -> list[str]:
+        cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
+        if mission_name:
+            cmd += ["--mission-name", mission_name]
+        for ex in bag_extras:
+            cmd += ["--extra", ex]
+        return cmd
+    
     # ID required (from CLI or YAML)
     mission_id = args.mission_id or cfg.get("mission_id")
     mission_name = args.mission_name or cfg.get("mission_name")
@@ -127,9 +178,7 @@ def main():
 
     # 1) Download (this script accepts id + name together)
     if not skip_download:
-        cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
-        if mission_name:
-            cmd += ["--mission-name", mission_name]
+        cmd = _build_download_cmd()
         try:
             sh(cmd)
         except subprocess.CalledProcessError as e:
@@ -164,9 +213,7 @@ def main():
 
             # Re-download mission bags (pattern-based) so the removed ones are fetched again
             try:
-                dl_cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
-                if mission_name:
-                    dl_cmd += ["--mission-name", mission_name]
+                dl_cmd = _build_download_cmd()
                 sh(dl_cmd)
             except subprocess.CalledProcessError as e:
                 print(f"[error] Re-download failed: {e}")

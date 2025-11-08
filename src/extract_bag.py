@@ -19,6 +19,8 @@ import yaml
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.ros_time import message_time_ns, header_stamp_ns
+from utils.rosbag_tools import filter_valid_rosbags
 
 from rosbags.highlevel import AnyReader
 
@@ -32,9 +34,6 @@ def save_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2))
     tmp.replace(path)
-
-def t_sec(nanos: int) -> float:
-    return nanos * 1e-9
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -109,25 +108,6 @@ def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
 
     return {k: v for k, v in chosen.items() if v}
 
-def filter_valid_rosbags(paths: list[Path]) -> list[Path]:
-    """Keep only real ROS1 .bag files; drop macOS '._' and anything non-ROS1."""
-    keep = []
-    for p in paths:
-        if not p.is_file():
-            continue
-        if p.name.startswith("._"):
-            # macOS AppleDouble sidecar (resource fork) -> skip
-            continue
-        try:
-            with p.open('rb') as f:
-                head = f.read(13)
-            if head.startswith(b"#ROSBAG V2.0"):
-                keep.append(p)
-        except Exception:
-            # unreadable -> skip
-            pass
-    return keep
-
 # --- TF / quaternion helpers ---
 
 def _sanitize_frame(name: str) -> str:
@@ -156,26 +136,31 @@ def _quat_norm(q):
 
 def extract_cmd_vel(reader: AnyReader, topic: str) -> pd.DataFrame:
     rows = []
-    for conn, t, raw in reader.messages(connections=[c for c in reader.connections if c.topic == topic]):
+    conns = [c for c in reader.connections if c.topic == topic]
+    for conn, t_log, raw in reader.messages(connections=conns):
         msg = reader.deserialize(raw, conn.msgtype)
-        # Support Twist and TwistStamped-ish payloads
+        ns = message_time_ns(msg, t_log, stream="cmd_vel")
         twist = getattr(msg, "twist", msg)  # TwistStamped.twist or Twist
         rows.append({
-            "t": t_sec(t),
+            "stamp_ns": int(ns),
+            "t": ns * 1e-9,
             "v_cmd_x": float(twist.linear.x),
-            "v_cmd_y": float(twist.linear.y) if hasattr(twist.linear, "y") else 0.0,
+            "v_cmd_y": float(getattr(twist.linear, "y", 0.0)),
             "w_cmd_z": float(twist.angular.z),
         })
-    return pd.DataFrame(rows).sort_values("t")
+    return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
 
 def extract_odom(reader: AnyReader, topic: str) -> pd.DataFrame:
     rows = []
-    for conn, t, raw in reader.messages(connections=[c for c in reader.connections if c.topic == topic]):
+    conns = [c for c in reader.connections if c.topic == topic]
+    for conn, t_log, raw in reader.messages(connections=conns):
         msg = reader.deserialize(raw, conn.msgtype)  # nav_msgs/Odometry
+        ns = message_time_ns(msg, t_log, stream="odom")
         vx = float(msg.twist.twist.linear.x)
         vy = float(getattr(msg.twist.twist.linear, "y", 0.0))
         rows.append({
-            "t": t_sec(t),
+            "stamp_ns": int(ns),
+            "t": ns * 1e-9,
             "vx": vx,
             "vy": vy,
             "speed": float(np.hypot(vx, vy)),
@@ -186,27 +171,33 @@ def extract_odom(reader: AnyReader, topic: str) -> pd.DataFrame:
             "qy": float(msg.pose.pose.orientation.y),
             "qz": float(msg.pose.pose.orientation.z),
         })
-    return pd.DataFrame(rows).sort_values("t")
+    return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
 
 def extract_gps(reader: AnyReader, topic: str) -> pd.DataFrame:
     rows = []
-    for conn, t, raw in reader.messages(connections=[c for c in reader.connections if c.topic == topic]):
+    conns = [c for c in reader.connections if c.topic == topic]
+    for conn, t_log, raw in reader.messages(connections=conns):
         msg = reader.deserialize(raw, conn.msgtype)  # NavSatFix
+        ns = message_time_ns(msg, t_log, stream="gps")
         rows.append({
-            "t": t_sec(t),
+            "stamp_ns": int(ns),
+            "t": ns * 1e-9,
             "lat": float(msg.latitude),
             "lon": float(msg.longitude),
             "alt": float(msg.altitude),
             "status": int(getattr(msg.status, "status", 0)),
         })
-    return pd.DataFrame(rows).sort_values("t")
+    return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
 
 def extract_imu(reader: AnyReader, topic: str) -> pd.DataFrame:
     rows = []
-    for conn, t, raw in reader.messages(connections=[c for c in reader.connections if c.topic == topic]):
+    conns = [c for c in reader.connections if c.topic == topic]
+    for conn, t_log, raw in reader.messages(connections=conns):
         msg = reader.deserialize(raw, conn.msgtype)  # Imu
+        ns = message_time_ns(msg, t_log, stream="imu")
         rows.append({
-            "t": t_sec(t),
+            "stamp_ns": int(ns),
+            "t": ns * 1e-9,
             "ax": float(msg.linear_acceleration.x),
             "ay": float(msg.linear_acceleration.y),
             "az": float(msg.linear_acceleration.z),
@@ -218,7 +209,7 @@ def extract_imu(reader: AnyReader, topic: str) -> pd.DataFrame:
             "qy": float(msg.orientation.y),
             "qz": float(msg.orientation.z),
         })
-    return pd.DataFrame(rows).sort_values("t")
+    return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
 
 def extract_base_orientation_from_tf(
     reader: AnyReader,
@@ -230,14 +221,14 @@ def extract_base_orientation_from_tf(
     Works whether hops come as a->b or only b->a (uses inverse as needed).
     (uses inverse)
     Emits a sparse time-series (records when q_WB changes).
-    Time 't' uses the bag timestamp for consistency with other tables.
+    Time columns use transform header.stamp when available (fallback: bag log time).
     """
     # collect all TF samples
     entries = []
     for conn in reader.connections:
         if ("TFMessage" in conn.msgtype or "tfMessage" in conn.msgtype) and conn.topic in ("/tf", "/tf_static"):
             is_static = (conn.topic == "/tf_static")
-            for _, t, raw in reader.messages(connections=[conn]):
+            for _, t_log, raw in reader.messages(connections=[conn]):
                 msg = reader.deserialize(raw, conn.msgtype)
                 transforms = getattr(msg, "transforms", None)
                 if not transforms:
@@ -248,13 +239,16 @@ def extract_base_orientation_from_tf(
                     if not parent or not child:
                         continue
                     rot = getattr(getattr(tr, "transform", None), "rotation", None)
-                    if rot is None: 
+                    if rot is None:
                         continue
                     q = (float(rot.w), float(rot.x), float(rot.y), float(rot.z))
-                    entries.append((bool(is_static), float(t_sec(t)), parent, child, q))
+                    ns_tr = header_stamp_ns(tr)  # header.stamp on the TransformStamped
+                    ns = int(ns_tr) if (ns_tr is not None and ns_tr > 0) else int(t_log)
+                    entries.append((bool(is_static), ns * 1e-9, parent, child, q))
 
     if not entries:
-        return pd.DataFrame(columns=["t","qw","qx","qy","qz"])
+        return pd.DataFrame(columns=["stamp_ns","t","qw","qx","qy","qz"])
+
 
     # process statics first, then dynamics by time
     entries.sort(key=lambda e: (0 if e[0] else 1, e[1]))
@@ -324,9 +318,13 @@ def extract_base_orientation_from_tf(
             if same:
                 continue
         last_q = q_WB
-        rows.append({"t": t, "qw": q_WB[0], "qx": q_WB[1], "qy": q_WB[2], "qz": q_WB[3]})
+        rows.append({
+            "stamp_ns": int(round(t * 1e9)),
+            "t": t,
+            "qw": q_WB[0], "qx": q_WB[1], "qy": q_WB[2], "qz": q_WB[3],
+        })
 
-    return pd.DataFrame(rows).sort_values("t").reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
 
 # --------------------- main ---------------------
 
@@ -344,9 +342,7 @@ def main():
     rr = P["REPO_ROOT"]
     missions = load_missions_json(rr)
     mp = resolve_mission(args.mission, P)
-    mission_id, mission_folder = mp.mission_id, mp.folder
-    raw_dir = P["RAW"] / mission_folder
-    out_dir = P["TABLES"] / mission_folder
+    mission_id, mission_folder, raw_dir, out_dir = mp.mission_id, mp.folder, mp.raw, mp.tables
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine which bag files to read.
