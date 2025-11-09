@@ -35,6 +35,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.filtering import filter_signal, load_metrics_config
 
 # optional: use registry to detect metric names if present
 try:
@@ -50,9 +51,16 @@ EXCLUDE_DEFAULT = {
     "t", "x", "y", "z",
     "lat", "lon", "alt",
     "vx", "vy", "vz",
-    "roll", "pitch", "yaw",
     "v_cmd_x", "v_cmd_y", "w_cmd_z",
-    "v_cmd", "v_actual", "speed",  # convenience/raw
+    "v_cmd", "v_actual", "speed",
+    "qw_x", "qx_x", "qy_x", "qz_x", 
+    "ax", "ay", "az",
+    "wx", "wy", "wz",
+    "qw_WB", "qx_WB", "qy_WB", "qz_WB",
+    "dem_grad_e", "dem_grad_n",
+    "dem_slope_lat", "dem_slope_long",
+    "dem_slope_lat_deg", "dem_slope_long_deg",
+      # convenience/raw
 }
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
@@ -117,6 +125,8 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
+    metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
+    filters_cfg = metrics_cfg.get("filters", {})
     mp = resolve_mission(args.mission, P)
     sync_dir, mission_id, display_name = mp.synced, mp.mission_id, mp.display
 
@@ -175,7 +185,10 @@ def main():
     # Plot each requested/auto-detected metric
     for c in metric_cols:
         ax = axes[ax_i]
-        ax.plot(tt, df[c], label=c)
+        raw_vals = df[c].to_numpy(dtype=np.float64)
+        filt_vals = filter_signal(raw_vals, c, filters_cfg=filters_cfg, log_fn=print)
+        series = filt_vals if filt_vals is not None else raw_vals
+        ax.plot(tt, series, label=c)
         ax.set_ylabel(c)
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper right", frameon=False)
