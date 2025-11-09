@@ -41,6 +41,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.filtering import filter_signal, load_metrics_config
 
 P = get_paths()
 
@@ -159,6 +160,8 @@ def main():
     args = ap.parse_args()
 
     # Paths & meta
+    metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
+    filters_cfg = metrics_cfg.get("filters", {})
     mp = resolve_mission(args.mission, P)
     sync_dir, short, display_name, map_dir = mp.synced, mp.folder, mp.display, mp.maps
     synced = pick_synced(sync_dir, args.hz)
@@ -172,7 +175,12 @@ def main():
 
     lat = df["lat"].to_numpy()
     lon = df["lon"].to_numpy()
-    val = df[args.metric].to_numpy()
+    metric_vals_raw = df[args.metric].to_numpy(dtype=np.float64)
+    val = filter_signal(
+        metric_vals_raw, args.metric, filters_cfg=filters_cfg, log_fn=print
+    )
+    if val is None:
+        raise RuntimeError(f"Failed to obtain values for metric '{args.metric}'.")
 
     # GPS -> pixel once
     cols, rows, W, H = latlon_to_pixels(lat, lon, tif_path)

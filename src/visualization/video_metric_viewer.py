@@ -4,6 +4,7 @@ and optionally add yaw/pitch/roll time-series to the RIGHT (three stacked plots)
 
 Usage:
     python src/visualization/video_metric_viewer.py --mission TRIM-1
+    python src/visualization/video_metric_viewer.py --mission TRIM-1 --overlay-pitch
     python src/visualization/video_metric_viewer.py --mission TRIM-1 --no-plot-orientation
 """
 #!/usr/bin/env python3
@@ -35,6 +36,7 @@ from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.ros_time import message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
+from utils.filtering import filter_signal, load_metrics_config
 
 def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
     if hz is not None:
@@ -237,6 +239,9 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
+    metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
+    filters_cfg = metrics_cfg.get("filters", {})
+
     mp = resolve_mission(args.mission, P)
     raw_dir, synced_dir, display_name = mp.raw, mp.synced, mp.display
     out_base = Path(P["REPO_ROOT"]) / "reports" / display_name
@@ -259,7 +264,12 @@ def main():
         metric_ns = metric_raw.view("int64").to_numpy()
     else:
         metric_ns = (metric_raw.to_numpy(dtype=np.float64) * 1e9).astype(np.int64)
-    metric_vals = df[args.metric].to_numpy(dtype=np.float64)
+    metric_vals_raw = df[args.metric].to_numpy(dtype=np.float64)
+    metric_vals = filter_signal(
+        metric_vals_raw, args.metric, filters_cfg=filters_cfg, log_fn=print
+    )
+    if metric_vals is None:
+        raise RuntimeError(f"Failed to obtain values for metric '{args.metric}'.")
 
     # Try grabbing quaternion columns if orientation needed
     need_orientation = args.plot_orientation or args.overlay_pitch
@@ -271,6 +281,11 @@ def main():
             qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
             yaw_deg, pitch_deg, roll_deg = euler_zyx_from_qWB(qw, qx, qy, qz)
             have_orientation = True
+            """
+            yaw_deg = filter_signal(yaw_deg, "yaw_deg", filters_cfg=filters_cfg, log_fn=print)
+            pitch_deg = filter_signal(pitch_deg, "pitch_deg", filters_cfg=filters_cfg, log_fn=print)
+            roll_deg = filter_signal(roll_deg, "roll_deg", filters_cfg=filters_cfg, log_fn=print)
+            """
         except Exception as e:
             print(f"[warn] Orientation unavailable: {e}")
             have_orientation = False

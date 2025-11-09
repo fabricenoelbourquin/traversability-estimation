@@ -5,3 +5,22 @@ metrics:
   separate_output: true 
 params:
   max_speed_mps: 1
+
+filters:
+  # leave default as pass-through so only explicitly listed signals are smoothed
+  default:
+    type: none
+
+  speed_error_abs:
+    - type: moving_median  # suppress single-frame spikes
+      window: 5
+    - type: moving_average # smooth residual jitter
+      window: 35
+
+  speed_tracking_score:
+    type: moving_average
+    window: 25
+
+  pitch_deg:
+    type: moving_average
+    window: 60
