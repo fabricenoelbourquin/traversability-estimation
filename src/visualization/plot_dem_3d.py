@@ -156,6 +156,15 @@ def main():
     except Exception:
         pass
 
+    # enforce a minimum z-span so axes stay readable on flat terrain
+    if np.isfinite(Zs).any():
+        z_min = np.nanmin(Zs)
+        z_max = np.nanmax(Zs)
+        current_span = z_max - z_min
+        target_span = max(current_span, 50.0)
+        pad = max(0.0, (target_span - current_span) / 2.0)
+        ax.set_zlim(z_min - pad, z_max + pad)
+
     # trajectory overlay
     if args.plot_trajectory:
         synced_path, hz = pick_synced_path(mp.synced, args.hz)
