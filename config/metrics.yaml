@@ -1,3 +1,5 @@
+# metrics.yaml (with new section)
+
 metrics:
   names:
     - speed_error_abs
@@ -5,6 +7,22 @@ metrics:
   separate_output: true 
 params:
   max_speed_mps: 1
+
+# Parameters for the local-plane-fitting DEM slope calculation
+dem_slope_params:
+  # Size of the square patch to fit the plane (e.g., 5 -> 5x5 pixels).
+  # MUST be an odd number (3, 5, 7, ...).
+  patch_size_pixels: 5
+
+  # Method for weighting pixels in the least-squares fit.
+  # "uniform": All pixels in the patch are weighted equally.
+  # "gaussian": Pixels closer to the center are weighted more.
+  weighting_method: "gaussian"
+
+  # Standard deviation (in pixels) for the Gaussian weight kernel.
+  # Only used if weighting_method is "gaussian".
+  # A good starting value is (patch_size_pixels / 4).
+  weighting_sigma_pixels: 1.25
 
 filters:
   # leave default as pass-through so only explicitly listed signals are smoothed
