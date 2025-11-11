@@ -10,19 +10,52 @@ Examples:
 """
 
 from __future__ import annotations
-from pathlib import Path
-import argparse, json, os, re, sys, time
 
-import pandas as pd
+import argparse
+import json
+import os
+import re
+import time
+from collections import deque
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import yaml
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
-from utils.ros_time import message_time_ns, header_stamp_ns
+from utils.ros_time import header_stamp_ns, message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 
 from rosbags.highlevel import AnyReader
+
+TOPIC_RULES = {
+    "cmd_vel": {
+        "name": re.compile(r"(^|/)cmd_vel$|command.*(twist|vel)|twist_command", re.I),
+        "types": (
+            "geometry_msgs/msg/Twist",
+            "geometry_msgs/msg/TwistStamped",
+            "geometry_msgs/Twist",
+            "geometry_msgs/TwistStamped",
+        ),
+    },
+    "odom": {
+        "name": re.compile(r"odom|odometry|state_estimator/odometry", re.I),
+        "types": ("nav_msgs/msg/Odometry", "nav_msgs/Odometry"),
+        "prefer": re.compile(r"anymal", re.I),
+    },
+    "gps": {
+        "name": re.compile(r"navsatfix|gps|gnss|fix", re.I),
+        "types": ("sensor_msgs/msg/NavSatFix", "sensor_msgs/NavSatFix"),
+        "prefer": re.compile(r"cpt7|inertial_explorer", re.I),
+    },
+    "imu": {
+        "name": re.compile(r"(^|/)imu($|/)", re.I),
+        "types": ("sensor_msgs/msg/Imu", "sensor_msgs/Imu"),
+        "prefer": re.compile(r"anymal|adis|stim", re.I),
+    },
+}
 
 # --------------------- helpers ---------------------
 
@@ -42,7 +75,7 @@ def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
 
-def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
+def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
     """
     Choose topic names for cmd_vel, odom, gps, imu.
     Preference:
@@ -50,61 +83,33 @@ def choose_topics(conns, topics_cfg: dict) -> dict[str, str]:
       - heuristics by name + msg type
     Returns a dict like {"cmd_vel": "/anymal/twist_command", "odom": "...", ...}
     """
-    # explicit config (optional)
     explicit = (topics_cfg or {}).get("topics", {})
-    chosen: dict[str, str | None] = {
-        "cmd_vel": explicit.get("cmd_vel"),
-        "odom": explicit.get("odom"),
-        "gps": explicit.get("gps"),
-        "imu": explicit.get("imu"),
-    }
-
-    # If something is missing, try to guess from connections
-    # Build list of (topic, msgtype)
+    chosen = {key: explicit.get(key) for key in TOPIC_RULES}
     items = [(c.topic, c.msgtype) for c in conns]
 
-    def pick(pred_name_re: re.Pattern, type_whitelist: tuple[str, ...], prefer_re: re.Pattern | None = None) -> str | None:
-        cand = []
-        for topic, mtype in items:
-            if pred_name_re.search(topic) and mtype in type_whitelist:
-                cand.append(topic)
-        if not cand:
-            # relax: allow name-only OR type-only matches
-            for topic, mtype in items:
-                if pred_name_re.search(topic) or (mtype in type_whitelist):
-                    cand.append(topic)
-        if not cand:
+    def pick_rule(rule: dict) -> str | None:
+        strict = [
+            topic for topic, msg_type in items
+            if rule["name"].search(topic) and msg_type in rule["types"]
+        ]
+        if not strict:
+            strict = [
+                topic for topic, msg_type in items
+                if rule["name"].search(topic) or msg_type in rule["types"]
+            ]
+        if not strict:
             return None
-        if prefer_re:
-            for t in cand:
-                if prefer_re.search(t):
-                    return t
-        # otherwise first (stable order from AnyReader.connections)
-        return cand[0]
 
-    # Regexes + msg types
-    RE_CMD = re.compile(r'(^|/)cmd_vel$|command.*(twist|vel)|twist_command', re.I)
-    RE_ODOM = re.compile(r'odom|odometry|state_estimator/odometry', re.I)
-    RE_GPS = re.compile(r'navsatfix|gps|gnss|fix', re.I)
-    RE_IMU = re.compile(r'(^|/)imu($|/)', re.I)
+        prefer = rule.get("prefer")
+        if prefer:
+            for topic in strict:
+                if prefer.search(topic):
+                    return topic
+        return strict[0]
 
-    TYPE_TWIST = ("geometry_msgs/msg/Twist", "geometry_msgs/msg/TwistStamped",
-                  "geometry_msgs/Twist", "geometry_msgs/TwistStamped")
-    TYPE_ODOM  = ("nav_msgs/msg/Odometry", "nav_msgs/Odometry")
-    TYPE_GPS   = ("sensor_msgs/msg/NavSatFix", "sensor_msgs/NavSatFix")
-    TYPE_IMU   = ("sensor_msgs/msg/Imu", "sensor_msgs/Imu")
-
-    prefer_anymal = re.compile(r'anymal', re.I)
-    prefer_cpt7 = re.compile(r'cpt7|inertial_explorer', re.I)
-
-    if not chosen["cmd_vel"]:
-        chosen["cmd_vel"] = pick(RE_CMD, TYPE_TWIST)
-    if not chosen["odom"]:
-        chosen["odom"] = pick(RE_ODOM, TYPE_ODOM, prefer_anymal)
-    if not chosen["gps"]:
-        chosen["gps"] = pick(RE_GPS, TYPE_GPS, prefer_cpt7)
-    if not chosen["imu"]:
-        chosen["imu"] = pick(RE_IMU, TYPE_IMU, re.compile(r'anymal|adis|stim', re.I))
+    for key, rule in TOPIC_RULES.items():
+        if not chosen.get(key):
+            chosen[key] = pick_rule(rule)
 
     return {k: v for k, v in chosen.items() if v}
 
@@ -114,7 +119,8 @@ def _sanitize_frame(name: str) -> str:
     return name[1:] if name.startswith("/") else name
 
 def _quat_mul(q1, q2):
-    w1,x1,y1,z1 = q1; w2,x2,y2,z2 = q2
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
     return (
         w1*w2 - x1*x2 - y1*y2 - z1*z2,
         w1*x2 + x1*w2 + y1*z2 - z1*y2,
@@ -123,13 +129,14 @@ def _quat_mul(q1, q2):
     )
 
 def _quat_conj(q):
-    w,x,y,z = q
+    w, x, y, z = q
     return (w, -x, -y, -z)
 
 def _quat_norm(q):
-    w,x,y,z = q
+    w, x, y, z = q
     n = float(np.sqrt(w*w + x*x + y*y + z*z))
-    if n == 0: return q
+    if n == 0:
+        return q
     return (w/n, x/n, y/n, z/n)
 
 # --------------------- extractors ---------------------
@@ -223,108 +230,216 @@ def extract_base_orientation_from_tf(
     Emits a sparse time-series (records when q_WB changes).
     Time columns use transform header.stamp when available (fallback: bag log time).
     """
-    # collect all TF samples
-    entries = []
+    tf_conns = []
     for conn in reader.connections:
-        if ("TFMessage" in conn.msgtype or "tfMessage" in conn.msgtype) and conn.topic in ("/tf", "/tf_static"):
-            is_static = (conn.topic == "/tf_static")
-            for _, t_log, raw in reader.messages(connections=[conn]):
-                msg = reader.deserialize(raw, conn.msgtype)
-                transforms = getattr(msg, "transforms", None)
-                if not transforms:
+        msg_type = (conn.msgtype or "").lower()
+        if conn.topic in ("/tf", "/tf_static") and "tfmessage" in msg_type:
+            tf_conns.append(conn)
+
+    entries = []
+    for conn in tf_conns:
+        is_static = conn.topic == "/tf_static"
+        for _, t_log, raw in reader.messages(connections=[conn]):
+            msg = reader.deserialize(raw, conn.msgtype)
+            transforms = getattr(msg, "transforms", ()) or ()
+            for transform in transforms:
+                parent = _sanitize_frame(getattr(getattr(transform, "header", None), "frame_id", "") or "")
+                child = _sanitize_frame(getattr(transform, "child_frame_id", "") or "")
+                if not parent or not child:
                     continue
-                for tr in transforms:
-                    parent = _sanitize_frame(getattr(getattr(tr, "header", None), "frame_id", "") or "")
-                    child  = _sanitize_frame(getattr(tr, "child_frame_id", "") or "")
-                    if not parent or not child:
-                        continue
-                    rot = getattr(getattr(tr, "transform", None), "rotation", None)
-                    if rot is None:
-                        continue
-                    q = (float(rot.w), float(rot.x), float(rot.y), float(rot.z))
-                    ns_tr = header_stamp_ns(tr)  # header.stamp on the TransformStamped
-                    ns = int(ns_tr) if (ns_tr is not None and ns_tr > 0) else int(t_log)
-                    entries.append((bool(is_static), ns * 1e-9, parent, child, q))
+                rot = getattr(getattr(transform, "transform", None), "rotation", None)
+                if rot is None:
+                    continue
+                q = (float(rot.w), float(rot.x), float(rot.y), float(rot.z))
+                stamp_ns = header_stamp_ns(transform)
+                ns = int(stamp_ns) if (stamp_ns and stamp_ns > 0) else int(t_log)
+                entries.append((is_static, ns * 1e-9, parent, child, q))
 
     if not entries:
-        return pd.DataFrame(columns=["stamp_ns","t","qw","qx","qy","qz"])
+        return pd.DataFrame(columns=["stamp_ns", "t", "qw", "qx", "qy", "qz"])
 
+    entries.sort(key=lambda entry: (0 if entry[0] else 1, entry[1]))
 
-    # process statics first, then dynamics by time
-    entries.sort(key=lambda e: (0 if e[0] else 1, e[1]))
+    latest = {}
+    adjacency = {}
 
-    latest = {}          # (parent, child) -> quat(parent->child)
-    adj = {}             # undirected adjacency for BFS
+    def add_edge(parent: str, child: str, quat) -> None:
+        latest[(parent, child)] = quat
+        adjacency.setdefault(parent, set()).add(child)
+        adjacency.setdefault(child, set()).add(parent)
 
-    def _add_edge(p, c, q):
-        latest[(p,c)] = q
-        adj.setdefault(p, set()).add(c)
-        adj.setdefault(c, set()).add(p)
-
-    def _compose_q(a: str, b: str):
-        # BFS on current adj to get path a->...->b
-        if a not in adj or b not in adj:
+    def compose(world: str, base: str):
+        if world not in adjacency or base not in adjacency:
             return None
-        prev = {a: None}
-        q = [a]
-        from collections import deque
-        dq = deque(q)
-        while dq:
-            u = dq.popleft()
-            if u == b: break
-            for v in adj.get(u, ()):
-                if v not in prev:
-                    prev[v] = u
-                    dq.append(v)
-        if b not in prev:
+        queue = deque([world])
+        prev = {world: None}
+        while queue:
+            node = queue.popleft()
+            if node == base:
+                break
+            for neighbor in adjacency.get(node, ()):
+                if neighbor not in prev:
+                    prev[neighbor] = node
+                    queue.append(neighbor)
+        if base not in prev:
             return None
-        # reconstruct path and compose
         path = []
-        u = b
-        while u is not None:
-            path.append(u)
-            u = prev[u]
+        node = base
+        while node is not None:
+            path.append(node)
+            node = prev[node]
         path.reverse()
-        qtot = (1.0, 0.0, 0.0, 0.0)
-        for x, y in zip(path[:-1], path[1:]):   # desired hop x->y
-            q_xy = latest.get((x,y))
-            if q_xy is None:
-                q_yx = latest.get((y,x))
-                if q_yx is None:
+        q_total = (1.0, 0.0, 0.0, 0.0)
+        for frm, to in zip(path[:-1], path[1:]):
+            hop = latest.get((frm, to))
+            if hop is None:
+                reverse = latest.get((to, frm))
+                if reverse is None:
                     return None
-                q_xy = _quat_conj(q_yx)
-            qtot = _quat_mul(qtot, q_xy)
-        qtot = _quat_norm(qtot)
-        if qtot[0] < 0.0:  # sign-canonicalize
-            qtot = tuple(-c for c in qtot)
-        return qtot
+                hop = _quat_conj(reverse)
+            q_total = _quat_mul(q_total, hop)
+        q_total = _quat_norm(q_total)
+        if q_total[0] < 0.0:
+            q_total = tuple(-c for c in q_total)
+        return q_total
 
     rows = []
     last_q = None
     wf = _sanitize_frame(world_frame)
     bf = _sanitize_frame(base_frame)
 
-    for is_static, t, parent, child, q in entries:
-        _add_edge(parent, child, q)
-        q_WB = _compose_q(wf, bf)
-        if q_WB is None:
+    for is_static, t_val, parent, child, quat in entries:
+        add_edge(parent, child, quat)
+        q_wb = compose(wf, bf)
+        if q_wb is None:
             continue
         if is_static and rows:
             continue
         if last_q is not None:
-            # skip if identical (including q ~ -q)
-            same = (np.allclose(q_WB, last_q, atol=1e-6) or
-                    np.allclose(q_WB, tuple(-c for c in last_q), atol=1e-6))
+            same = (
+                np.allclose(q_wb, last_q, atol=1e-6)
+                or np.allclose(q_wb, tuple(-c for c in last_q), atol=1e-6)
+            )
             if same:
                 continue
-        last_q = q_WB
+        last_q = q_wb
         rows.append({
-            "stamp_ns": int(round(t * 1e9)),
-            "t": t,
-            "qw": q_WB[0], "qx": q_WB[1], "qy": q_WB[2], "qz": q_WB[3],
+            "stamp_ns": int(round(t_val * 1e9)),
+            "t": t_val,
+            "qw": q_wb[0],
+            "qx": q_wb[1],
+            "qy": q_wb[2],
+            "qz": q_wb[3],
         })
 
     return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
+
+# --- ANYmalState extractor: q_*, qd_* from msg.joints ---
+def extract_anymal_state_q_qd(reader: AnyReader, topic: str) -> pd.DataFrame:
+    """
+    anymal_msgs/AnymalState on /anymal/state_estimator/anymal_state
+
+    Uses:
+      - msg.joints.name        -> list[str]
+      - msg.joints.position    -> list/ndarray (rad)
+      - msg.joints.velocity    -> list/ndarray (rad/s)
+
+    Writes wide columns:
+      - q_<name>, qd_<name>
+    """
+    tall = []
+    conns = [c for c in reader.connections if c.topic == topic]
+
+    for conn, t_log, raw in reader.messages(connections=conns):
+        try:
+            msg = reader.deserialize(raw, conn.msgtype)
+        except Exception:
+            continue
+        joints = getattr(msg, "joints", None)
+        if joints is None:
+            continue
+
+        names = getattr(joints, "name", None)
+        pos = getattr(joints, "position", None)
+        vel = getattr(joints, "velocity", None)
+        if names is None or (pos is None and vel is None):
+            continue
+
+        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
+        t = float(ns) * 1e-9
+
+        names = list(names)
+        positions = list(pos) if pos is not None else []
+        velocities = list(vel) if vel is not None else []
+
+        for idx, joint_name in enumerate(names):
+            q = float(positions[idx]) if idx < len(positions) else float("nan")
+            qd = float(velocities[idx]) if idx < len(velocities) else float("nan")
+            tall.append({"t": t, "joint": str(joint_name), "q": q, "qd": qd})
+
+    if not tall:
+        return pd.DataFrame(columns=["t"])
+
+    df = pd.DataFrame(tall)
+    q_w  = df.pivot_table(index="t", columns="joint", values="q",  aggfunc="last")
+    qd_w = df.pivot_table(index="t", columns="joint", values="qd", aggfunc="last")
+    q_w.columns  = [f"q_{c}"  for c in q_w.columns]
+    qd_w.columns = [f"qd_{c}" for c in qd_w.columns]
+    wide = pd.concat([q_w, qd_w], axis=1).sort_index().reset_index()
+    wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
+    return wide
+
+
+# --- SEA extractor: tau_* from msg.readings[i].state ---
+def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame:
+    """
+    series_elastic_actuator_msgs/SeActuatorReadings on /anymal/actuator_readings
+
+    Uses, per reading r in msg.readings:
+      - r.state.name             -> str (joint name)
+      - r.state.joint_torque     -> float (N·m)
+
+    Writes wide columns:
+      - tau_<name>
+    """
+    tall = []
+    conns = [c for c in reader.connections if c.topic == topic]
+
+    for conn, t_log, raw in reader.messages(connections=conns):
+        try:
+            msg = reader.deserialize(raw, conn.msgtype)
+        except Exception:
+            continue
+
+        readings = getattr(msg, "readings", None)
+        if not readings:
+            continue
+
+        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
+        t  = float(ns) * 1e-9
+
+        for r in readings:
+            st = getattr(r, "state", None)
+            if st is None:
+                continue
+            name = getattr(st, "name", None)
+            tau  = getattr(st, "joint_torque", None)
+            if name is None or tau is None:
+                continue
+            try:
+                tall.append({"t": t, "joint": str(name), "tau": float(tau)})
+            except (TypeError, ValueError):
+                continue
+
+    if not tall:
+        return pd.DataFrame(columns=["t"])
+
+    df = pd.DataFrame(tall)
+    tau_w = df.pivot_table(index="t", columns="joint", values="tau", aggfunc="last")
+    tau_w.columns = [f"tau_{c}" for c in tau_w.columns]
+    wide = tau_w.sort_index().reset_index()
+    wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
+    return wide
 
 # --------------------- main ---------------------
 
@@ -354,8 +469,7 @@ def main():
     for pat in patterns:
         bag_paths.extend(sorted(raw_dir.glob(pat)))
     # De-duplicate while preserving order
-    seen = set()
-    bag_paths = [p for p in bag_paths if not (p in seen or seen.add(p))]
+    bag_paths = list(dict.fromkeys(bag_paths))
     if not bag_paths:
         # Fallback to all bags
         bag_paths = sorted(raw_dir.glob("*.bag"))
@@ -384,53 +498,76 @@ def main():
                 print(f"{k:>8}: (not found)")
         
         # Frames from topics.yaml (optional; falls back to defaults)
-        frames_cfg = (topics_cfg or {}).get("frames", {}) if topics_cfg else {}
+        frames_cfg = (topics_cfg or {}).get("frames", {})
         world_frame = frames_cfg.get("world", "enu_origin")
         base_frame  = frames_cfg.get("base",  "base")
         print(f"[info] Frames: world='{world_frame}'  base='{base_frame}'")
 
         # Extract & save
         outputs = {}
+        def write_table(name: str, df: pd.DataFrame, filename: str, *, extra=None, empty_msg: str | None = None) -> None:
+            if df.empty:
+                if empty_msg:
+                    print(empty_msg)
+                return
+            path = out_dir / filename
+            if args.overwrite or not path.exists():
+                df.to_parquet(path, index=False)
+            outputs[name] = {"rows": int(len(df)), "path": str(path), **(extra or {})}
+
         if topics.get("cmd_vel"):
-            df = extract_cmd_vel(reader, topics["cmd_vel"])
-            path = out_dir / "cmd_vel.parquet"
-            if args.overwrite or not path.exists():
-                df.to_parquet(path, index=False)
-            outputs["cmd_vel"] = {"rows": int(len(df)), "path": str(path)}
+            write_table("cmd_vel", extract_cmd_vel(reader, topics["cmd_vel"]), "cmd_vel.parquet")
         if topics.get("odom"):
-            df = extract_odom(reader, topics["odom"])
-            path = out_dir / "odom.parquet"
-            if args.overwrite or not path.exists():
-                df.to_parquet(path, index=False)
-            outputs["odom"] = {"rows": int(len(df)), "path": str(path)}
+            write_table("odom", extract_odom(reader, topics["odom"]), "odom.parquet")
         if topics.get("gps"):
-            df = extract_gps(reader, topics["gps"])
-            path = out_dir / "gps.parquet"
-            if args.overwrite or not path.exists():
-                df.to_parquet(path, index=False)
-            outputs["gps"] = {"rows": int(len(df)), "path": str(path)}
+            write_table("gps", extract_gps(reader, topics["gps"]), "gps.parquet")
         if topics.get("imu"):
-            df = extract_imu(reader, topics["imu"])
-            path = out_dir / "imu.parquet"
-            if args.overwrite or not path.exists():
-                df.to_parquet(path, index=False)
-            outputs["imu"] = {"rows": int(len(df)), "path": str(path)}
+            write_table("imu", extract_imu(reader, topics["imu"]), "imu.parquet")
         # --- Extract base orientation q_WB (base→world) from TF and save as a table
         try:
             df_q = extract_base_orientation_from_tf(reader, world_frame, base_frame)
         except Exception as e:
-            df_q = pd.DataFrame(columns=["t","qw","qx","qy","qz"])
+            df_q = pd.DataFrame(columns=["stamp_ns","t","qw","qx","qy","qz"])
             print(f"[warn] TF orientation extraction failed: {e}")
 
-        if len(df_q):
-            path = out_dir / "base_orientation.parquet"
-            if args.overwrite or not path.exists():
-                df_q.to_parquet(path, index=False)
-            outputs["base_orientation"] = {"rows": int(len(df_q)), "path": str(path),
-                                           "world_frame": world_frame, "base_frame": base_frame}
-        else:
-            print("[warn] No TF-based orientation recovered (q_WB).")
+        write_table(
+            "base_orientation",
+            df_q,
+            "base_orientation.parquet",
+            extra={"world_frame": world_frame, "base_frame": base_frame},
+            empty_msg="[warn] No TF-based orientation recovered (q_WB).",
+        )
 
+        # Additional ANYmal-specific topics
+        present = {c.topic: c.msgtype for c in conns}
+
+        # q, qd
+        topic_state = "/anymal/state_estimator/anymal_state"
+        if topic_state in present:
+            try:
+                df_js = extract_anymal_state_q_qd(reader, topic_state)
+                write_table(
+                    "joint_states",
+                    df_js,
+                    "joint_states.parquet",
+                    empty_msg=f"[info] No joint positions/velocities extracted from {topic_state}.",
+                )
+            except Exception as e:
+                print(f"[warn] anymal_state extractor failed: {e}")
+
+        # tau
+        topic_sea = "/anymal/actuator_readings"
+        if topic_sea in present:
+            try:
+                df_sea = extract_actuator_readings_tau(reader, topic_sea)
+                write_table(
+                    "actuator_readings",
+                    df_sea,
+                    "actuator_readings.parquet",
+                    empty_msg=f"[info] No joint torques extracted from {topic_sea}.",
+                )
+            except Exception as e:
+                print(f"[warn] actuator_readings extractor failed: {e}")
 
     # Save per-mission metadata
     topics_used = {
