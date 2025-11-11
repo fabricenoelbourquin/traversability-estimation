@@ -113,6 +113,22 @@ def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
 
     return {k: v for k, v in chosen.items() if v}
 
+def _probe_anymal_joint_order(reader, topic: str = "/anymal/state_estimator/anymal_state") -> list[str] | None:
+    """Return the first non-empty joint name sequence from anymal_state, else None."""
+    conns = [c for c in reader.connections if c.topic == topic]
+    for conn, t_log, raw in reader.messages(connections=conns):
+        try:
+            msg = reader.deserialize(raw, conn.msgtype)
+        except Exception:
+            continue
+        joints = getattr(msg, "joints", None)
+        names = getattr(joints, "name", None) if joints is not None else None
+        if names:
+            order = [str(n).strip() for n in names]
+            if len(order):
+                return order
+    return None
+
 # --- TF / quaternion helpers ---
 
 def _sanitize_frame(name: str) -> str:
@@ -396,14 +412,26 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
     series_elastic_actuator_msgs/SeActuatorReadings on /anymal/actuator_readings
 
     Uses, per reading r in msg.readings:
-      - r.state.name             -> str (joint name)
-      - r.state.joint_torque     -> float (N·m)
+      - prefer r.state.name (fallback to r.commanded.name)
+      - prefer r.state.joint_torque (fallback to r.commanded.joint_torque)
 
-    Writes wide columns:
-      - tau_<name>
+    If names are empty, falls back to index-based labeling using the joint order
+    from /anymal/state_estimator/anymal_state (when available).
+
+    Writes wide columns: tau_<name>
     """
-    tall = []
+    tall: list[dict] = []
     conns = [c for c in reader.connections if c.topic == topic]
+
+    # Light debug state
+    dbg_missing = 0
+    dbg_names: set[str] = set()
+    dbg_first_msg = True
+
+    # Fallback joint order from anymal_state (if present)
+    fallback_names = _probe_anymal_joint_order(reader, "/anymal/state_estimator/anymal_state")
+    if fallback_names:
+        print(f"[tau dbg] using fallback joint order from anymal_state (len={len(fallback_names)})")
 
     for conn, t_log, raw in reader.messages(connections=conns):
         try:
@@ -415,19 +443,55 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
         if not readings:
             continue
 
-        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
-        t  = float(ns) * 1e-9
+        if dbg_first_msg:
+            rl = len(readings) if readings is not None else 0
+            fl = len(fallback_names) if fallback_names is not None else None
+            print(f"[tau dbg] first message: len(readings)={rl} len(fallback_names)={fl}")
+            dbg_first_msg = False
 
-        for r in readings:
+        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
+        t = float(ns) * 1e-9
+
+        for i, r in enumerate(readings):
             st = getattr(r, "state", None)
-            if st is None:
+            cm = getattr(r, "commanded", None)
+
+            def _norm(x):
+                return str(x).strip() if x is not None else ""
+
+            st_name = _norm(getattr(st, "name", None))
+            cm_name = _norm(getattr(cm, "name", None))
+            st_tau = getattr(st, "joint_torque", None) if st is not None else None
+            cm_tau = getattr(cm, "joint_torque", None) if cm is not None else None
+
+            if not st_name and not cm_name and dbg_missing < 8:
+                st_hdr = getattr(st, "header", None)
+                cm_hdr = getattr(cm, "header", None)
+                st_fid = getattr(st_hdr, "frame_id", None) if st_hdr is not None else None
+                cm_fid = getattr(cm_hdr, "frame_id", None) if cm_hdr is not None else None
+                print(
+                    f"[tau dbg] t={t:.3f} missing names; "
+                    f"st_tau={st_tau} cm_tau={cm_tau} "
+                    f"st_fid={repr(st_fid)} cm_fid={repr(cm_fid)}"
+                )
+                dbg_missing += 1
+
+            # Prefer explicit names; fallback to index-based mapping from anymal_state
+            name = st_name or cm_name
+            if not name and fallback_names and i < len(fallback_names):
+                name = fallback_names[i]
+
+            tau = st_tau if st_tau is not None else cm_tau
+
+            if name and name not in dbg_names and len(dbg_names) < 8:
+                print(f"[tau dbg] sample non-empty name: {repr(name)}")
+                dbg_names.add(name)
+
+            if not name or tau is None:
                 continue
-            name = getattr(st, "name", None)
-            tau  = getattr(st, "joint_torque", None)
-            if name is None or tau is None:
-                continue
+
             try:
-                tall.append({"t": t, "joint": str(name), "tau": float(tau)})
+                tall.append({"t": t, "joint": name, "tau": float(tau)})
             except (TypeError, ValueError):
                 continue
 
@@ -435,8 +499,18 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
         return pd.DataFrame(columns=["t"])
 
     df = pd.DataFrame(tall)
+    # Pre-pivot summary and cleanup
+    blanks = int((df["joint"].astype(str).str.len() == 0).sum())
+    uniq = sorted(df["joint"].astype(str).str.strip().unique().tolist())[:12]
+    print(f"[tau dbg] tall rows={len(df)} blanks={blanks} unique_names_sample={uniq}")
+    df = df[df["joint"].astype(str).str.len() > 0]
+
     tau_w = df.pivot_table(index="t", columns="joint", values="tau", aggfunc="last")
     tau_w.columns = [f"tau_{c}" for c in tau_w.columns]
+    cols = list(tau_w.columns)
+    empties = [c for c in cols if c == "tau_"]
+    print(f"[tau dbg] tau_w columns sample={cols[:12]} total={len(cols)} empty_suffix={empties}")
+
     wide = tau_w.sort_index().reset_index()
     wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
     return wide

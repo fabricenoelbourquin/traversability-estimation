@@ -55,6 +55,7 @@ def load_df(path: Path) -> Optional[pd.DataFrame]:
       - cast 't' to float seconds
       - sort by 't'
       - drop duplicate timestamps (keep last)
+      - drop metadata columns that break merges (e.g., 'stamp_ns')
     Returns None if the file does not exist.
     """
     if path.exists():
@@ -63,6 +64,8 @@ def load_df(path: Path) -> Optional[pd.DataFrame]:
         df = df[df["t"].notna()].copy()
         df["t"] = df["t"].astype(float)
         df = df.sort_values("t").drop_duplicates("t", keep="last")
+        # Drop metadata timestamps; 't' is our canonical time
+        df = df.drop(columns=[c for c in df.columns if c.startswith("stamp_ns")], errors="ignore")
         return df
     return None
 
@@ -92,17 +95,21 @@ def make_master_time(dfs, hz: float) -> pd.DataFrame:
 def asof_join(base: pd.DataFrame, df: pd.DataFrame, direction: str, tol_s: float) -> pd.DataFrame:
     """
     As-of join df onto base by float-seconds 't'.
-    Uses numeric tolerance for numeric keys; Timedelta for datetimelike keys.
+    Drops metadata columns like 'stamp_ns*' to avoid suffix collisions across chained merges.
     """
-    left = base.sort_values("t")
-    right = df.sort_values("t")
+    left = base.sort_values("t").copy()
+    right = df.sort_values("t").copy()
+
+    # Remove problematic metadata columns (present in many sources) that cause repeated suffixing
+    left = left.drop(columns=[c for c in left.columns if c.startswith("stamp_ns")], errors="ignore")
+    right = right.drop(columns=[c for c in right.columns if c.startswith("stamp_ns")], errors="ignore")
 
     # Decide tolerance type based on dtype of 't'
     t_dtype = left["t"].dtype
     if np.issubdtype(t_dtype, np.number):
-        tol = tol_s  # numeric seconds for numeric 't'
+        tol = tol_s
     else:
-        tol = pd.Timedelta(seconds=tol_s)  # for datetime64[ns] keys
+        tol = pd.Timedelta(seconds=tol_s)
 
     return pd.merge_asof(
         left,
@@ -169,6 +176,23 @@ def compute_convenience_cols(df: pd.DataFrame) -> None:
     if {"vx","vy"}.issubset(df.columns):
         df["v_actual"] = np.hypot(df["vx"], df["vy"])
 
+def add_distance_traveled(df: pd.DataFrame) -> None:
+    """
+    Estimate planar distance from odometry (x,y) if present; otherwise from v_actual.
+    Adds columns: dist_m (cumulative), dist_m_per_step (incremental).
+    """
+    if {"x","y"}.issubset(df.columns):
+        dx = df["x"].diff()
+        dy = df["y"].diff()
+        step = np.hypot(dx, dy)
+    elif "v_actual" in df.columns:
+        dt = df["t"].diff().fillna(0.0)
+        step = (df["v_actual"] * dt).fillna(0.0)
+    else:
+        step = pd.Series(np.nan, index=df.index)
+    df["dist_m_per_step"] = step
+    df["dist_m"] = step.fillna(0.0).cumsum()
+
 def main():
     """
     CLI entry point:
@@ -212,8 +236,10 @@ def main():
     df_gps  = load_df(tables_dir / "gps.parquet")
     df_imu  = load_df(tables_dir / "imu.parquet")
     df_qwb  = load_df(tables_dir / "base_orientation.parquet")
+    df_js   = load_df(tables_dir / "joint_states.parquet")         # q_*, qd_*
+    df_sea  = load_df(tables_dir / "actuator_readings.parquet")    # tau_*
 
-    dfs = [d for d in [df_cmd, df_odom, df_gps, df_imu] if d is not None]
+    dfs = [d for d in [df_cmd, df_odom, df_gps, df_imu, df_js, df_sea] if d is not None and len(d)]
 
     # Build a uniform master time base spanning all inputs
     master = make_master_time(dfs, hz)
@@ -243,12 +269,17 @@ def main():
             neg = synced["qw_WB"] < 0
             for c in ("qw_WB","qx_WB","qy_WB","qz_WB"):
                 synced.loc[neg, c] = -synced.loc[neg, c]
-
+    # Joint states & torques
+    if df_js is not None and len(df_js):
+        synced = asof_join(synced, df_js, direction, tol_s)
+    if df_sea is not None and len(df_sea):
+        synced = asof_join(synced, df_sea, direction, tol_s)
     # Interpolate numeric gaps (bounded by limit_seconds)
     synced = interpolate_numeric(synced, interp_limit_s, interp_method)
 
     # Convenience fields + optional smoothing
     compute_convenience_cols(synced)
+    add_distance_traveled(synced)
     rolling_mean(synced, ["v_cmd","v_actual"], smooth_win_s)
 
     # Coverage stats
