@@ -186,6 +186,7 @@ def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.nd
     """
     Convert quaternion q_WB (body→world, active) to yaw-pitch-roll (ZYX) in degrees.
     World: ENU. Body: x-forward, y-left, z-up.
+    Returns navigation-friendly yaw/pitch (north = 0°, clockwise yaw positive, nose-up pitch positive).
     """
     # ensure unit quaternions
     qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
@@ -213,7 +214,15 @@ def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.nd
     pitch = np.arctan2(-r20, np.clip(np.sqrt(r00*r00 + r10*r10), 1e-12, None))
     roll  = np.arctan2(r21, r22)
 
-    return np.rad2deg(yaw), np.rad2deg(pitch), np.rad2deg(roll)
+    yaw_deg = np.rad2deg(yaw)
+    pitch_deg = np.rad2deg(pitch)
+    roll_deg = np.rad2deg(roll)
+
+    # Align with intuitive navigation convention (clockwise heading, nose-up positive).
+    yaw_deg *= -1.0
+    pitch_deg *= -1.0
+
+    return yaw_deg, pitch_deg, roll_deg
 
 
 def main():
@@ -236,6 +245,8 @@ def main():
         action="store_true",
         help="Overlay pitch [deg] on the metric plot with a secondary Y-axis.",
     )
+    ap.add_argument("--tmin", type=float, default=None, help="Start time [s] relative to the video time zero (min).")
+    ap.add_argument("--tmax", type=float, default=None, help="End time [s] relative to the video time zero (max).")
     args = ap.parse_args()
 
     P = get_paths()
@@ -342,21 +353,44 @@ def main():
         t0 = min(metric_ns.min(), cam_ns0)
         metric_t = (metric_ns - t0) / 1e9
 
+        # optional focus window in seconds relative to t0
+        win_min = args.tmin if args.tmin is not None else float(metric_t.min())
+        win_max = args.tmax if args.tmax is not None else float(metric_t.max())
+        if win_max < win_min:
+            win_min, win_max = win_max, win_min
+
+        mask_window = (metric_t >= win_min) & (metric_t <= win_max)
+        if not np.any(mask_window):
+            print("[warn] --tmin/--tmax window empty; using full time range.")
+            mask_window = np.ones_like(metric_t, dtype=bool)
+            win_min = float(metric_t.min())
+            win_max = float(metric_t.max())
+        metric_t_plot = metric_t[mask_window]
+        metric_vals_plot = metric_vals[mask_window]
+        if args.overlay_pitch and have_orientation and pitch_deg is not None:
+            pitch_plot = pitch_deg[mask_window]
+        else:
+            pitch_plot = None
+        if have_orientation:
+            yaw_plot = yaw_deg[mask_window]
+            pitch_full_plot = pitch_deg[mask_window]
+            roll_plot = roll_deg[mask_window]
+
         # Build metric plot (bottom-left) — possibly with pitch overlay
         if args.overlay_pitch and have_orientation and pitch_deg is not None:
             fig_m, ax_m, vline_m, canvas_m = build_metric_plot_with_optional_pitch(
-                metric_t,
-                metric_vals,
+                metric_t_plot,
+                metric_vals_plot,
                 args.metric,
                 width_px=plot_w_out,
                 height_px=plot_h_out,
-                pitch_vals=pitch_deg,
+                pitch_vals=pitch_plot,
                 pitch_label="pitch [deg]",
             )
         else:
             fig_m, ax_m, vline_m, canvas_m = build_metric_plot_with_optional_pitch(
-                metric_t,
-                metric_vals,
+                metric_t_plot,
+                metric_vals_plot,
                 args.metric,
                 width_px=plot_w_out,
                 height_px=plot_h_out,
@@ -366,13 +400,13 @@ def main():
         # Build orientation plots if requested
         if have_orientation:
             fig_y, ax_y, vline_y, canvas_y = build_plot_figure(
-                metric_t, yaw_deg, "yaw [deg]", width_px=right_w, height_px=plot_h_out
+                metric_t_plot, yaw_plot, "yaw [deg]", width_px=right_w, height_px=plot_h_out
             )
             fig_p, ax_p, vline_p, canvas_p = build_plot_figure(
-                metric_t, pitch_deg, "pitch [deg]", width_px=right_w, height_px=plot_h_out
+                metric_t_plot, pitch_full_plot, "pitch [deg]", width_px=right_w, height_px=plot_h_out
             )
             fig_r, ax_r, vline_r, canvas_r = build_plot_figure(
-                metric_t, roll_deg, "roll [deg]", width_px=right_w, height_px=plot_h_out
+                metric_t_plot, roll_plot, "roll [deg]", width_px=right_w, height_px=plot_h_out
             )
 
         # video writer (stack left; optional right)
@@ -405,9 +439,12 @@ def main():
                 return left
 
         # first frame
-        combined = compose_frame(frame0, (cam_ns0 - t0) / 1e9)
-        vw.write(combined)
-        written = 1
+        t_s0 = (cam_ns0 - t0) / 1e9
+        written = 0
+        if win_min <= t_s0 <= win_max:
+            combined = compose_frame(frame0, t_s0)
+            vw.write(combined)
+            written = 1
         if args.max_frames is not None and written >= args.max_frames:
             vw.release()
             print(f"[done] wrote {written} frames to {out_path}")
@@ -426,6 +463,10 @@ def main():
 
             cam_ns = message_time_ns(msg, ts, stream="camera")
             t_s = (cam_ns - t0) / 1e9
+            if t_s < win_min:
+                continue
+            if t_s > win_max:
+                break
             combined = compose_frame(frame, t_s)
             vw.write(combined)
             written += 1
