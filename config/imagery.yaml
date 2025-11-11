@@ -23,7 +23,7 @@ embedding:
   model_id: "facebook/dinov3-vitl16-pretrain-sat493m"
   stride: 16
   # REQUIRED (one of: "dino", "stego", "both")
-  mode: "both"
+  mode: "dino"
   default_stego_head: "heads/head.pt"
 
 
