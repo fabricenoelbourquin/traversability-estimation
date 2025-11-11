@@ -17,7 +17,7 @@ params:
 # Parameters for the local-plane-fitting DEM slope calculation
 dem_slope_params:
   # Size of the square patch to fit the plane (e.g., 5 -> 5x5 pixels).
-  # MUST be an odd number (3, 5, 7, ...).
+  # MUST be an odd number.
   patch_size_pixels: 5
 
   # Method for weighting pixels in the least-squares fit.

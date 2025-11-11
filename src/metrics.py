@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
+from utils.filtering import filter_signal
 
 # --- registry ---
 REGISTRY: dict[str, Callable[[pd.DataFrame, dict], pd.Series]] = {}
@@ -62,7 +63,8 @@ def speed_tracking_score(df: pd.DataFrame, cfg: dict) -> pd.Series:
     score = max(0, 1 - |err|/max_speed)
     """
     d = _ensure_speed_columns(df)
-    vmax = float(cfg.get("max_speed_mps", 1.0))
+    # read from nested params (metrics.yaml: params.max_speed_mps)
+    vmax = float((cfg.get("params") or {}).get("max_speed_mps", 1.0))
     err = (d["v_cmd"] - d["v_actual"]).abs()
     return (1.0 - err / max(vmax, 1e-9)).clip(lower=0.0, upper=1.0)
 
@@ -128,11 +130,16 @@ def energy_pos_cum(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
     if "t" not in df:
         return pd.Series(np.nan, index=df.index)
+    # Raw instantaneous mechanical power (unfiltered)
     P = REGISTRY["power_mech"](df, cfg)
     if P.isna().all():
         return pd.Series(np.nan, index=df.index)
+    # Optionally smooth power before clamping/integration using filters.power_mech
+    filters_cfg = cfg.get("filters", {})
+    P_filt = filter_signal(P.to_numpy(dtype=np.float64), "power_mech", filters_cfg=filters_cfg, log_fn=None)
+    P_use = P.to_numpy(dtype=np.float64) if P_filt is None else P_filt
     dt = _dt_seconds(df["t"])
-    e_step = np.maximum(P, 0.0) * dt
+    e_step = np.maximum(P_use, 0.0) * dt
     return e_step.fillna(0.0).cumsum()
 
 @metric("cot_running")
