@@ -318,6 +318,7 @@ def main():
             raise FileNotFoundError(f"No '*_rgb8.tif' under {img_dir}. Run get_swisstopo_patch.py first or pass --input.")
         input_path = str(cands[0])
         out_dir = map_dir / out_subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
 
     # device + models
     device = pick_device(args.device)
