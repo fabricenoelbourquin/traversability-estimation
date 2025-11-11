@@ -14,6 +14,7 @@ Examples:
   python src/visualization/plot_timeseries.py --mission ETH-1
   python src/visualization/plot_timeseries.py --mission ETH-1 --hz 10 --metrics speed_error_abs speed_tracking_score
   python src/visualization/plot_timeseries.py --mission ETH-1 --with-speeds
+  python src/visualization/plot_timeseries.py --mission TRIM-1 --overlay-pitch
 """
 
 from __future__ import annotations
@@ -62,6 +63,70 @@ EXCLUDE_DEFAULT = {
     "dem_slope_lat_deg", "dem_slope_long_deg",
       # convenience/raw
 }
+
+PITCH_LABEL = "pitch [deg]"
+PITCH_COLOR = "tab:orange"
+
+
+def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return quaternion columns if present, preferring *_WB."""
+    if all(c in df.columns for c in ("qw_WB", "qx_WB", "qy_WB", "qz_WB")):
+        qw = df["qw_WB"].to_numpy(dtype=np.float64)
+        qx = df["qx_WB"].to_numpy(dtype=np.float64)
+        qy = df["qy_WB"].to_numpy(dtype=np.float64)
+        qz = df["qz_WB"].to_numpy(dtype=np.float64)
+        return qw, qx, qy, qz
+    if all(c in df.columns for c in ("qw", "qx", "qy", "qz")):
+        print("[warn] Using (qw,qx,qy,qz) instead of qw_WB..qz_WB — confirm frame is world-aligned.")
+        qw = df["qw"].to_numpy(dtype=np.float64)
+        qx = df["qx"].to_numpy(dtype=np.float64)
+        qy = df["qy"].to_numpy(dtype=np.float64)
+        qz = df["qz"].to_numpy(dtype=np.float64)
+        return qw, qx, qy, qz
+    raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
+
+
+def _normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    n[n == 0.0] = 1.0
+    return qw / n, qx / n, qy / n, qz / n
+
+
+def _euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert unit quaternion q_WB to yaw/pitch/roll (ZYX ordering) in degrees."""
+    qw, qx, qy, qz = _normalize_quat_arrays(qw, qx, qy, qz)
+
+    xx = qx * qx; yy = qy * qy; zz = qz * qz
+    xy = qx * qy; xz = qx * qz; yz = qy * qz
+    wx = qw * qx; wy = qw * qy; wz = qw * qz
+
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r10 = 2.0 * (xy + wz)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - 2.0 * (xx + yy)
+
+    yaw = np.arctan2(r10, r00)
+    pitch = np.arctan2(-r20, np.clip(np.sqrt(r00 * r00 + r10 * r10), 1e-12, None))
+    roll = np.arctan2(r21, r22)
+    return np.rad2deg(yaw), np.rad2deg(pitch), np.rad2deg(roll)
+
+
+def _compute_pitch_deg(df: pd.DataFrame) -> np.ndarray:
+    qw, qx, qy, qz = _get_quaternion_block(df)
+    _, pitch_deg, _ = _euler_zyx_from_qWB(qw, qx, qy, qz)
+    return -pitch_deg  # align with navigation convention (nose-up positive)
+
+
+def _overlay_pitch(ax, tt, pitch_deg: np.ndarray):
+    """Overlay pitch on a twin axis so metrics can be compared to slope."""
+    ax2 = ax.twinx()
+    ax2.plot(tt, pitch_deg, color=PITCH_COLOR, linewidth=1.2, label=PITCH_LABEL)
+    ax2.set_ylabel(PITCH_LABEL, color=PITCH_COLOR)
+    ax2.tick_params(axis="y", colors=PITCH_COLOR)
+    ax2.spines["right"].set_color(PITCH_COLOR)
+    ax2.grid(False)
+    return ax2
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
     # If Hz specified, try metrics file first
@@ -121,6 +186,11 @@ def main():
     ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
     ap.add_argument("--metrics", nargs="*", default=None, help="Subset of metric columns to plot")
     ap.add_argument("--with-speeds", action="store_true", help="Add a top panel with v_cmd vs v_actual")
+    ap.add_argument(
+        "--overlay-pitch",
+        action="store_true",
+        help="Overlay pitch [deg] on each subplot using a secondary Y-axis.",
+    )
     ap.add_argument("--out", default=None, help="Output image path (default: reports/<short>_timeseries.png)")
     args = ap.parse_args()
 
@@ -137,6 +207,14 @@ def main():
         raise KeyError(f"'t' column missing in {synced_path}")
     t0 = float(df["t"].iloc[0])
     tt = df["t"] - t0
+
+    pitch_deg = None
+    if args.overlay_pitch:
+        try:
+            pitch_deg = _compute_pitch_deg(df)
+        except Exception as exc:
+            print(f"[warn] Unable to overlay pitch: {exc}")
+            pitch_deg = None
 
     metric_cols = _detect_metric_cols(df, args.metrics)
 
@@ -180,6 +258,8 @@ def main():
         axes[ax_i].set_ylabel("speed [m/s]")
         axes[ax_i].legend(loc="upper right")
         axes[ax_i].set_title("Commanded vs actual speed")
+        if pitch_deg is not None:
+            _overlay_pitch(axes[ax_i], tt, pitch_deg)
         ax_i += 1
 
     # Plot each requested/auto-detected metric
@@ -192,6 +272,8 @@ def main():
         ax.set_ylabel(c)
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper right", frameon=False)
+        if pitch_deg is not None:
+            _overlay_pitch(ax, tt, pitch_deg)
         ax_i += 1
 
     axes[-1].set_xlabel("time [s]")
