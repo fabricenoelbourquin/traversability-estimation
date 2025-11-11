@@ -229,7 +229,7 @@ def main():
     ap = argparse.ArgumentParser(description="Render video + metric vertically (camera top, plot bottom) with optional yaw/pitch/roll plots on the right.")
     ap.add_argument("--mission", required=True)
     ap.add_argument("--hz", type=int, default=None)
-    ap.add_argument("--metric", default="speed_error_abs")
+    ap.add_argument("--metric", default="power_mech")
     ap.add_argument("--camera-pattern", default="*_hdr_front.bag")
     ap.add_argument("--camera-topic", default="/boxi/hdr/front/image_raw/compressed")
     ap.add_argument("--out", help="Output video path, e.g. /tmp/out.mp4")

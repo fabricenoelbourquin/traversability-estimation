@@ -3,10 +3,7 @@
 Plot time-series metrics for a mission from the synced parquet.
 
 Default behavior:
-  - Creates one subplot per metric column found in the synced parquet.
-  - Metrics are detected as:
-      (a) columns that match names from metrics.REGISTRY (if importable),
-      or (b) numeric columns excluding common raw/state fields.
+  - Creates one subplot per metric listed under `metrics.names` in config/metrics.yaml (if present in the parquet).
 
 You can also pass a subset via --metrics.
 
@@ -21,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List, Sequence
+from typing import Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -37,32 +34,6 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.filtering import filter_signal, load_metrics_config
-
-# optional: use registry to detect metric names if present
-try:
-    from metrics import REGISTRY as METRIC_REGISTRY  # if you kept metrics in src/metrics.py
-except Exception:
-    try:
-        from metrics.metrics import REGISTRY as METRIC_REGISTRY  # if later you move to a package
-    except Exception:
-        METRIC_REGISTRY = {}
-
-# columns we don't treat as "metrics" when auto-detecting
-EXCLUDE_DEFAULT = {
-    "t", "x", "y", "z",
-    "lat", "lon", "alt",
-    "vx", "vy", "vz",
-    "v_cmd_x", "v_cmd_y", "w_cmd_z",
-    "v_cmd", "v_actual", "speed",
-    "qw_x", "qx_x", "qy_x", "qz_x", 
-    "ax", "ay", "az",
-    "wx", "wy", "wz",
-    "qw_WB", "qx_WB", "qy_WB", "qz_WB",
-    "dem_grad_e", "dem_grad_n",
-    "dem_slope_lat", "dem_slope_long",
-    "dem_slope_lat_deg", "dem_slope_long_deg",
-      # convenience/raw
-}
 
 PITCH_LABEL = "pitch [deg]"
 PITCH_COLOR = "tab:orange"
@@ -139,46 +110,36 @@ def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
             return p_plain
         raise FileNotFoundError(f"Neither {p_metrics} nor {p_plain} found")
 
-    # Otherwise pick the newest, preferring *_metrics.parquet
-    cands = sorted(
-        list(sync_dir.glob("synced_*Hz_metrics.parquet")) +
-        list(sync_dir.glob("synced_*Hz.parquet")),
-        key=lambda p: p.stat().st_mtime, reverse=True
-    )
-    if not cands:
-        raise FileNotFoundError(f"No synced parquets in {sync_dir}")
-    return cands[0]
+    metrics = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if metrics:
+        return metrics[0]
 
-def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None) -> List[str]:
+    plains = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not plains:
+        raise FileNotFoundError(f"No synced parquets in {sync_dir}")
+    return plains[0]
+
+def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None, whitelist: Iterable[str]) -> List[str]:
     if include:
         missing = [c for c in include if c not in df.columns]
         if missing:
             raise KeyError(f"Requested metrics not present: {missing}")
         return list(include)
 
-    # try registry first
-    reg_names = [k for k in METRIC_REGISTRY.keys() if k in df.columns]
-    cols: List[str]
-    if reg_names:
-        cols = reg_names
-    else:
-        # fall back: all numeric, excluding "raw-ish" columns
-        num = df.select_dtypes(include="number").columns
-        cols = [c for c in num if c not in EXCLUDE_DEFAULT]
+    wl = [c for c in (whitelist or []) if isinstance(c, str)]
+    if wl:
+        missing = [c for c in wl if c not in df.columns]
+        if missing:
+            print(f"[warn] Metrics listed in config but missing from parquet: {missing}")
+        cols = [c for c in wl if c in df.columns]
+        if not cols:
+            raise RuntimeError("None of the metrics listed in config/metrics.yaml are present in the dataframe.")
+        return cols
 
-    # drop all-NaN or near-constant metrics
-    good = []
-    for c in cols:
-        s = df[c]
-        if s.notna().sum() < 5:
-            continue
-        if float(s.max() - s.min()) == 0.0:
-            continue
-        good.append(c)
-    if not good and cols:
-        # if filtering removed all, keep original cols to show something
-        good = cols
-    return good
+    # fallback: keep previous heuristic so script still works if config lacks names
+    num = df.select_dtypes(include="number").columns
+    cols = [c for c in num if c not in {"t"}]
+    return cols
 
 def main():
     ap = argparse.ArgumentParser(description="Plot metrics time-series for a mission.")
@@ -216,7 +177,8 @@ def main():
             print(f"[warn] Unable to overlay pitch: {exc}")
             pitch_deg = None
 
-    metric_cols = _detect_metric_cols(df, args.metrics)
+    whitelist = metrics_cfg.get("metrics", {}).get("names", []) if metrics_cfg else []
+    metric_cols = _detect_metric_cols(df, args.metrics, whitelist)
 
     # Decide whether to add the speed panel (explicit flag + available columns)
     has_cmd_speed = ("v_cmd" in df.columns) or ({"v_cmd_x", "v_cmd_y"}.issubset(df.columns))
