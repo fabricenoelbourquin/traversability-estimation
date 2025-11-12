@@ -290,6 +290,8 @@ def main():
             cmd = [py, "src/visualization/plot_timeseries.py", *ident_either()]
             if yes(ts_cfg.get("with_speeds", False)):
                 cmd.append("--with-speeds")
+            if yes(ts_cfg.get("overlay_pitch", False)):
+                cmd.append("--overlay-pitch")
             sh(cmd)
         else:
             print(">> Timeseries plot disabled in config.")
