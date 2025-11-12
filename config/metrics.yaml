@@ -1,5 +1,3 @@
-# metrics.yaml (with new section)
-
 metrics:
   names:
     - speed_error_abs
