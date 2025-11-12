@@ -50,7 +50,7 @@ def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
     lat_cols = [c for c in df.columns if "lat" in c.lower()]
     lon_cols = [c for c in df.columns if "lon" in c.lower()]
     if not lat_cols or not lon_cols:
-        raise KeyError(f"Couldn’t find lat/lon columns. Found lat={lat_cols}, lon={lon_cols}")
+        raise KeyError(f"Couldn't find lat/lon columns. Found lat={lat_cols}, lon={lon_cols}")
     return lat_cols[0], lon_cols[0]
 
 def world_to_rowcol(transform: Affine, x: np.ndarray, y: np.ndarray):
@@ -92,7 +92,8 @@ def main():
                     help="Override DEM; default: <mission>/maps/swisstopo/alti3d_chip512_gsd050.tif")
     ap.add_argument("--stride", type=int, default=1, help="Downsample factor for plotting (>=1).")
     ap.add_argument("--dpi", type=int, default=220)
-    ap.add_argument("--azim", type=float, default=-60)
+    ap.add_argument("--azim", type=float, default=None,
+                    help="Override azimuth; default automatically picks the lowest DEM corner to face the camera.")
     ap.add_argument("--elev", type=float, default=45)
     ap.add_argument("--alpha", type=float, default=0.92, help="Surface alpha (helps see the path).")
     ap.add_argument("--show", action="store_true", default=False, help="Open interactive window.")
@@ -195,7 +196,36 @@ def main():
         else:
             print("[traj] no points fall within the DEM extent — nothing to draw.")
 
-    ax.view_init(elev=float(args.elev), azim=float(args.azim))
+    def pick_auto_azim(Xg: np.ndarray, Yg: np.ndarray, Zg: np.ndarray) -> float:
+        """Aim camera toward the lowest corner so high terrain doesn't occlude the rest."""
+        corners = [
+            (0, 0),  # top-left
+            (0, -1),  # top-right
+            (-1, 0),  # bottom-left
+            (-1, -1),  # bottom-right
+        ]
+        vals = []
+        for ci, cj in corners:
+            zc = Zg[ci, cj]
+            if np.isnan(zc):
+                continue
+            xc = Xg[ci, cj]
+            yc = Yg[ci, cj]
+            vals.append((zc, xc, yc))
+        if not vals:
+            return -60.0
+        z_min, xc, yc = min(vals, key=lambda t: t[0])
+        x0 = np.nanmean(Xg)
+        y0 = np.nanmean(Yg)
+        dx = xc - x0
+        dy = yc - y0
+        if dx == 0 and dy == 0:
+            return -60.0
+        angle = np.degrees(np.arctan2(dy, dx))
+        return float(angle)
+
+    azim = args.azim if args.azim is not None else pick_auto_azim(Xs, Ys, Zs)
+    ax.view_init(elev=float(args.elev), azim=float(azim))
     ax.set_xlabel("Easting [m]"); ax.set_ylabel("Northing [m]"); ax.set_zlabel("Elevation [m]")
     ax.set_title(f"{mp.display} — DEM 3D")
     fig.tight_layout()
