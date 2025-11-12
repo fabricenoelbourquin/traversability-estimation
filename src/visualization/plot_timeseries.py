@@ -177,8 +177,16 @@ def main():
             print(f"[warn] Unable to overlay pitch: {exc}")
             pitch_deg = None
 
-    whitelist = metrics_cfg.get("metrics", {}).get("names", []) if metrics_cfg else []
+    metrics_section = metrics_cfg.get("metrics", {}) if metrics_cfg else {}
+    whitelist = metrics_section.get("names", []) if metrics_section else []
+    cumulative_list = metrics_section.get("cumulative", []) if metrics_section else []
+    cumulative_set = {c for c in cumulative_list if isinstance(c, str)}
+
     metric_cols = _detect_metric_cols(df, args.metrics, whitelist)
+    if args.metrics is None and cumulative_set:
+        ordered = [c for c in metric_cols if c not in cumulative_set]
+        ordered.extend([c for c in metric_cols if c in cumulative_set])
+        metric_cols = ordered
 
     # Decide whether to add the speed panel (explicit flag + available columns)
     has_cmd_speed = ("v_cmd" in df.columns) or ({"v_cmd_x", "v_cmd_y"}.issubset(df.columns))
@@ -234,7 +242,7 @@ def main():
         ax.set_ylabel(c)
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper right", frameon=False)
-        if pitch_deg is not None:
+        if pitch_deg is not None and c not in cumulative_set:
             _overlay_pitch(ax, tt, pitch_deg)
         ax_i += 1
 

@@ -3,11 +3,15 @@
 metrics:
   names:
     - speed_error_abs
-    - speed_tracking_score
     - joint_travel_rate_L1
     - joint_travel_cum_L1
     - torque_L1_rate
     - power_mech
+    - power_mech_signed
+    - energy_pos_cum
+    - cot_running
+  cumulative:
+    - joint_travel_cum_L1
     - energy_pos_cum
     - cot_running
   separate_output: true 
@@ -58,6 +62,12 @@ filters:
       window: 45
   
   power_mech:
+    - type: moving_median
+      window: 5
+    - type: moving_average
+      window: 25
+  
+  power_mech_signed:
     - type: moving_median
       window: 5
     - type: moving_average

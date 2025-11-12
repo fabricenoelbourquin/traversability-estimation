@@ -38,6 +38,19 @@ def _find_joint_columns(df: pd.DataFrame):
     tau_cols = [c for c in df.columns if c.startswith("tau_")]
     return qd_cols, tau_cols
 
+def _nan_series(df: pd.DataFrame) -> pd.Series:
+    return pd.Series(np.nan, index=df.index)
+
+def _joint_power_terms(df: pd.DataFrame) -> pd.DataFrame | None:
+    qd_cols, tau_cols = _find_joint_columns(df)
+    if not qd_cols or not tau_cols:
+        return None
+    joints = sorted(set(c[3:] for c in qd_cols) & set(c[4:] for c in tau_cols))
+    if not joints:
+        return None
+    data = {j: df[f"tau_{j}"] * df[f"qd_{j}"] for j in joints}
+    return pd.DataFrame(data, index=df.index)
+
 
 # Metrics
 #   Each metric:
@@ -111,17 +124,20 @@ def power_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
     Mechanical power usage [W]: sum_j |tau_j * qd_j| (no regen credit).
     """
-    qd_cols, tau_cols = _find_joint_columns(df)
-    if not qd_cols or not tau_cols:
-        return pd.Series(np.nan, index=df.index)
-    # align columns by joint name
-    joints = sorted(set(c[3:] for c in qd_cols) & set(c[4:] for c in tau_cols))
-    if not joints:
-        return pd.Series(np.nan, index=df.index)
-    terms = []
-    for j in joints:
-        terms.append((df[f"tau_{j}"] * df[f"qd_{j}"]).abs())
-    return pd.concat(terms, axis=1).sum(axis=1)
+    terms = _joint_power_terms(df)
+    if terms is None:
+        return _nan_series(df)
+    return terms.abs().sum(axis=1)
+
+@metric("power_mech_signed")
+def power_mech_signed(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """
+    Signed mechanical power [W]: sum_j tau_j * qd_j (regen captured).
+    """
+    terms = _joint_power_terms(df)
+    if terms is None:
+        return _nan_series(df)
+    return terms.sum(axis=1)
 
 @metric("energy_pos_cum")
 def energy_pos_cum(df: pd.DataFrame, cfg: dict) -> pd.Series:
