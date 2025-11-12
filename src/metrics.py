@@ -109,7 +109,7 @@ def torque_L1_rate(df: pd.DataFrame, cfg: dict) -> pd.Series:
 @metric("power_mech")
 def power_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
-    Mechanical power [W]: sum_j tau_j * qd_j (can be negative with regen).
+    Mechanical power usage [W]: sum_j |tau_j * qd_j| (no regen credit).
     """
     qd_cols, tau_cols = _find_joint_columns(df)
     if not qd_cols or not tau_cols:
@@ -120,7 +120,7 @@ def power_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
         return pd.Series(np.nan, index=df.index)
     terms = []
     for j in joints:
-        terms.append(df[f"tau_{j}"] * df[f"qd_{j}"])
+        terms.append((df[f"tau_{j}"] * df[f"qd_{j}"]).abs())
     return pd.concat(terms, axis=1).sum(axis=1)
 
 @metric("energy_pos_cum")

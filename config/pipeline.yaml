@@ -6,6 +6,7 @@ visuals:
   timeseries:
     enabled: true
     with_speeds: true
+    overlay_pitch: true
 
   map:
     enabled: true
@@ -26,4 +27,4 @@ visuals:
       no_plot_orientation: false   # if true, pipeline adds --no-plot-orientation
       overlay_pitch: true          # if true, pipeline adds --overlay-pitch
     dem_vs_quat_pitch_roll:
-      enabled: true
+      enabled: false
