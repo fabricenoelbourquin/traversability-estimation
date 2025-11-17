@@ -33,6 +33,7 @@ from utils.filtering import filter_signal, load_metrics_config
 
 PITCH_LABEL = "pitch [deg]"
 PITCH_COLOR = "tab:orange"
+ZERO_LINE_STYLE = {"color": "0.3", "linewidth": 0.7, "alpha": 0.55, "linestyle": "--"}
 
 
 def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -94,6 +95,11 @@ def _overlay_pitch(ax, xx: np.ndarray, pitch_deg: np.ndarray):
     ax2.spines["right"].set_color(PITCH_COLOR)
     ax2.grid(False)
     return ax2
+
+
+def _add_zero_line(ax) -> None:
+    """Draw a faint horizontal line at zero for quick visual reference."""
+    ax.axhline(0.0, **ZERO_LINE_STYLE)
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
     # If Hz specified, try metrics file first
@@ -185,6 +191,7 @@ def _build_metric_figure(
         axes[ax_i].set_ylabel("speed [m/s]")
         axes[ax_i].legend(loc="upper right")
         axes[ax_i].set_title("Commanded vs actual speed")
+        _add_zero_line(axes[ax_i])
         if pitch_deg is not None:
             _overlay_pitch(axes[ax_i], x_values, pitch_deg)
         ax_i += 1
@@ -197,6 +204,7 @@ def _build_metric_figure(
         ax.plot(x_values, series, label=c)
         ax.set_ylabel(c)
         ax.grid(True, alpha=0.25)
+        _add_zero_line(ax)
         ax.legend(loc="upper right", frameon=False)
         if pitch_deg is not None and c not in cumulative_set:
             _overlay_pitch(ax, x_values, pitch_deg)
