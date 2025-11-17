@@ -178,18 +178,21 @@ def compute_convenience_cols(df: pd.DataFrame) -> None:
 
 def add_distance_traveled(df: pd.DataFrame) -> None:
     """
-    Estimate planar distance from odometry (x,y) if present; otherwise from v_actual.
-    Adds columns: dist_m (cumulative), dist_m_per_step (incremental).
+    Estimate planar distance from odometry (x, y).
+    Adds columns:
+      - dist_m_per_step: incremental progress between samples.
+      - dist_m: cumulative distance with NaNs treated as 0.
     """
-    if {"x","y"}.issubset(df.columns):
-        dx = df["x"].diff()
-        dy = df["y"].diff()
-        step = np.hypot(dx, dy)
-    elif "v_actual" in df.columns:
-        dt = df["t"].diff().fillna(0.0)
-        step = (df["v_actual"] * dt).fillna(0.0)
-    else:
-        step = pd.Series(np.nan, index=df.index)
+    n = len(df)
+    if n == 0:
+        df["dist_m_per_step"] = pd.Series(dtype=float)
+        df["dist_m"] = pd.Series(dtype=float)
+        return
+    if not {"x", "y"}.issubset(df.columns):
+        raise KeyError("Distance computation requires x and y columns.")
+    coords = np.stack([df["x"].to_numpy(dtype=np.float64), df["y"].to_numpy(dtype=np.float64)], axis=1)
+    deltas = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+    step = pd.Series(np.concatenate([[0.0], deltas]), index=df.index)
     df["dist_m_per_step"] = step
     df["dist_m"] = step.fillna(0.0).cumsum()
 
