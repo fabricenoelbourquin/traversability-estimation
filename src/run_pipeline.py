@@ -287,12 +287,21 @@ def main():
 
         ts_cfg = (vis.get("timeseries") or {})
         if yes(ts_cfg.get("enabled", True)):
-            cmd = [py, "src/visualization/plot_timeseries.py", *ident_either()]
-            if yes(ts_cfg.get("with_speeds", False)):
-                cmd.append("--with-speeds")
-            if yes(ts_cfg.get("overlay_pitch", False)):
-                cmd.append("--overlay-pitch")
-            sh(cmd)
+            plot_time = yes(ts_cfg.get("plot_time", True))
+            plot_distance = yes(ts_cfg.get("plot_distance", False))
+            if not plot_time and not plot_distance:
+                print(">> Timeseries plot enabled but no axes selected (set plot_time/plot_distance). Skipping.")
+            else:
+                cmd = [py, "src/visualization/plot_metric_progress.py", *ident_either()]
+                if yes(ts_cfg.get("with_speeds", False)):
+                    cmd.append("--with-speeds")
+                if yes(ts_cfg.get("overlay_pitch", False)):
+                    cmd.append("--overlay-pitch")
+                if plot_time:
+                    cmd.append("--plot-time")
+                if plot_distance:
+                    cmd.append("--plot-distance")
+                sh(cmd)
         else:
             print(">> Timeseries plot disabled in config.")
 

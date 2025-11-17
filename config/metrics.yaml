@@ -7,11 +7,11 @@ metrics:
     - power_mech
     - power_mech_signed
     - energy_pos_cum
-    - cot_running
+#    - cot_running
   cumulative:
     - joint_travel_cum_L1
     - energy_pos_cum
-    - cot_running
+#    - cot_running
   separate_output: true 
 params:
   max_speed_mps: 1

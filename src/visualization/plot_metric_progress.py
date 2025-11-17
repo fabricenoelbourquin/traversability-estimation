@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """
-Plot time-series metrics for a mission from the synced parquet.
+Plot mission metrics against time and/or cumulative distance.
 
 Default behavior:
-  - Creates one subplot per metric listed under `metrics.names` in config/metrics.yaml (if present in the parquet).
-
-You can also pass a subset via --metrics.
+  - Creates one subplot per metric listed under `metrics.names` in config/metrics.yaml (when available).
+  - Generates a time-based plot unless --plot-distance only is requested.
 
 Examples:
-  python src/visualization/plot_timeseries.py --mission ETH-1
-  python src/visualization/plot_timeseries.py --mission ETH-1 --hz 10 --metrics speed_error_abs speed_tracking_score
-  python src/visualization/plot_timeseries.py --mission ETH-1 --with-speeds
-  python src/visualization/plot_timeseries.py --mission TRIM-1 --overlay-pitch
+  python src/visualization/plot_metric_progress.py --mission ETH-1
+  python src/visualization/plot_metric_progress.py --mission ETH-1 --plot-distance --with-speeds
+  python src/visualization/plot_metric_progress.py --mission ETH-1 --plot-time --plot-distance --overlay-pitch
 """
 
 from __future__ import annotations
 import argparse
-import json
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
@@ -26,7 +23,6 @@ import matplotlib.pyplot as plt
 
 # --- path helper ---
 import sys
-from pathlib import Path
 THIS_FILE = Path(__file__).resolve()
 SRC_ROOT = THIS_FILE.parents[1]    # .../src
 if str(SRC_ROOT) not in sys.path:
@@ -89,10 +85,10 @@ def _compute_pitch_deg(df: pd.DataFrame) -> np.ndarray:
     return -pitch_deg  # align with navigation convention (nose-up positive)
 
 
-def _overlay_pitch(ax, tt, pitch_deg: np.ndarray):
+def _overlay_pitch(ax, xx: np.ndarray, pitch_deg: np.ndarray):
     """Overlay pitch on a twin axis so metrics can be compared to slope."""
     ax2 = ax.twinx()
-    ax2.plot(tt, pitch_deg, color=PITCH_COLOR, linewidth=1.2, label=PITCH_LABEL)
+    ax2.plot(xx, pitch_deg, color=PITCH_COLOR, linewidth=1.2, label=PITCH_LABEL)
     ax2.set_ylabel(PITCH_LABEL, color=PITCH_COLOR)
     ax2.tick_params(axis="y", colors=PITCH_COLOR)
     ax2.spines["right"].set_color(PITCH_COLOR)
@@ -141,8 +137,78 @@ def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None, whiteli
     cols = [c for c in num if c not in {"t"}]
     return cols
 
+
+def _build_metric_figure(
+    df: pd.DataFrame,
+    x_values: np.ndarray,
+    x_label: str,
+    metric_cols: Sequence[str],
+    cumulative_set: set[str],
+    filters_cfg: dict,
+    add_speed_panel: bool,
+    pitch_deg: np.ndarray | None,
+    title: str,
+) -> plt.Figure:
+    """
+    Build a stacked metric figure for a particular X-axis (time or distance).
+    """
+    n_extra = 1 if add_speed_panel else 0
+    n_panels = len(metric_cols) + n_extra
+    if n_panels == 0:
+        raise RuntimeError("No metric columns detected. Run compute_metrics or specify --metrics.")
+
+    fig_h = max(3.0, 2.3 * n_panels)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(10, fig_h), sharex=True)
+    if n_panels == 1:
+        axes = [axes]
+
+    ax_i = 0
+    if add_speed_panel:
+        if "v_cmd" in df.columns:
+            v_cmd = df["v_cmd"]
+        elif {"v_cmd_x", "v_cmd_y"}.issubset(df.columns):
+            v_cmd = np.hypot(df["v_cmd_x"], df["v_cmd_y"])
+        else:
+            v_cmd = None
+
+        if "v_actual" in df.columns:
+            v_act = df["v_actual"]
+        elif {"vx", "vy"}.issubset(df.columns):
+            v_act = np.hypot(df["vx"], df["vy"])
+        else:
+            v_act = None
+
+        if v_cmd is not None:
+            axes[ax_i].plot(x_values, v_cmd, label="v_cmd")
+        if v_act is not None:
+            axes[ax_i].plot(x_values, v_act, label="v_actual")
+        axes[ax_i].set_ylabel("speed [m/s]")
+        axes[ax_i].legend(loc="upper right")
+        axes[ax_i].set_title("Commanded vs actual speed")
+        if pitch_deg is not None:
+            _overlay_pitch(axes[ax_i], x_values, pitch_deg)
+        ax_i += 1
+
+    for c in metric_cols:
+        ax = axes[ax_i]
+        raw_vals = df[c].to_numpy(dtype=np.float64)
+        filt_vals = filter_signal(raw_vals, c, filters_cfg=filters_cfg, log_fn=print)
+        series = filt_vals if filt_vals is not None else raw_vals
+        ax.plot(x_values, series, label=c)
+        ax.set_ylabel(c)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper right", frameon=False)
+        if pitch_deg is not None and c not in cumulative_set:
+            _overlay_pitch(ax, x_values, pitch_deg)
+        ax_i += 1
+
+    axes[-1].set_xlabel(x_label)
+    fig.suptitle(title, y=0.995, fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    return fig
+
 def main():
-    ap = argparse.ArgumentParser(description="Plot metrics time-series for a mission.")
+    ap = argparse.ArgumentParser(description="Plot metrics over time and/or distance for a mission.")
     ap.add_argument("--mission", required=True, help="Mission alias or UUID")
     ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
     ap.add_argument("--metrics", nargs="*", default=None, help="Subset of metric columns to plot")
@@ -152,7 +218,13 @@ def main():
         action="store_true",
         help="Overlay pitch [deg] on each subplot using a secondary Y-axis.",
     )
-    ap.add_argument("--out", default=None, help="Output image path (default: reports/<short>_timeseries.png)")
+    ap.add_argument("--plot-time", action="store_true", default=True, help="Also render metrics vs time (default if no axis specified).")
+    ap.add_argument("--plot-distance", action="store_true", default=True, help="Render metrics vs cumulative distance when dist_m is available.")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="Output path. Use a file path when generating a single plot or a directory when producing multiple plots.",
+    )
     args = ap.parse_args()
 
     P = get_paths()
@@ -162,12 +234,11 @@ def main():
     sync_dir, mission_id, display_name = mp.synced, mp.mission_id, mp.display
 
     synced_path = _pick_synced(sync_dir, args.hz)
-
     df = pd.read_parquet(synced_path)
     if "t" not in df.columns:
         raise KeyError(f"'t' column missing in {synced_path}")
     t0 = float(df["t"].iloc[0])
-    tt = df["t"] - t0
+    tt = (df["t"] - t0).to_numpy(dtype=np.float64)
 
     pitch_deg = None
     if args.overlay_pitch:
@@ -193,69 +264,55 @@ def main():
     has_act_speed = ("v_actual" in df.columns) or ({"vx", "vy"}.issubset(df.columns))
     add_speed_panel = bool(args.with_speeds and (has_cmd_speed or has_act_speed))
 
-    n_extra = 1 if add_speed_panel else 0
-    n_panels = len(metric_cols) + n_extra
-    if n_panels == 0:
-        raise RuntimeError("No metric columns detected. Run compute_metrics or specify --metrics.")
+    # Determine which axes to render. Default to time when nothing specified.
+    plot_time = args.plot_time or not args.plot_distance
+    plot_distance = args.plot_distance
+    requests: list[tuple[str, np.ndarray, str, str]] = []
+    if plot_time:
+        requests.append(("time", tt, "time [s]", "timeseries"))
+    if plot_distance:
+        if "dist_m" not in df.columns:
+            raise KeyError("dist_m column missing in synced parquet. Re-run sync_streams.py to add it.")
+        dist = df["dist_m"].to_numpy(dtype=np.float64)
+        dist = np.nan_to_num(dist, nan=0.0)
+        dist = dist - dist[0]
+        requests.append(("distance", dist, "distance traveled [m]", "distance"))
 
-    fig_h = max(3.0, 2.3 * n_panels)
-    fig, axes = plt.subplots(n_panels, 1, figsize=(10, fig_h), sharex=True)
-    if n_panels == 1:
-        axes = [axes]  # normalize to list
+    out_arg = Path(args.out).expanduser() if args.out else None
+    default_dir = P["REPO_ROOT"] / "reports" / display_name
+    default_dir.mkdir(parents=True, exist_ok=True)
+    multi = len(requests) > 1
 
-    ax_i = 0
-    if add_speed_panel:
-        # Build commanded speed
-        if "v_cmd" in df.columns:
-            v_cmd = df["v_cmd"]
-        elif {"v_cmd_x", "v_cmd_y"}.issubset(df.columns):
-            v_cmd = np.hypot(df["v_cmd_x"], df["v_cmd_y"])
-        else:
-            v_cmd = None
+    def resolve_out_path(suffix: str) -> Path:
+        if multi:
+            out_dir = out_arg if out_arg is not None else default_dir
+            if out_dir.suffix:
+                raise ValueError("When plotting multiple axes, --out must be a directory path.")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            return out_dir / f"{display_name}_{suffix}.png"
+        if out_arg is not None:
+            parent = out_arg.parent
+            parent.mkdir(parents=True, exist_ok=True)
+            return out_arg
+        return default_dir / f"{display_name}_{suffix}.png"
 
-        # Build actual speed
-        if "v_actual" in df.columns:
-            v_act = df["v_actual"]
-        elif {"vx", "vy"}.issubset(df.columns):
-            v_act = np.hypot(df["vx"], df["vy"])
-        else:
-            v_act = None
-
-        if v_cmd is not None:
-            axes[ax_i].plot(tt, v_cmd, label="v_cmd")
-        if v_act is not None:
-            axes[ax_i].plot(tt, v_act, label="v_actual")
-        axes[ax_i].set_ylabel("speed [m/s]")
-        axes[ax_i].legend(loc="upper right")
-        axes[ax_i].set_title("Commanded vs actual speed")
-        if pitch_deg is not None:
-            _overlay_pitch(axes[ax_i], tt, pitch_deg)
-        ax_i += 1
-
-    # Plot each requested/auto-detected metric
-    for c in metric_cols:
-        ax = axes[ax_i]
-        raw_vals = df[c].to_numpy(dtype=np.float64)
-        filt_vals = filter_signal(raw_vals, c, filters_cfg=filters_cfg, log_fn=print)
-        series = filt_vals if filt_vals is not None else raw_vals
-        ax.plot(tt, series, label=c)
-        ax.set_ylabel(c)
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="upper right", frameon=False)
-        if pitch_deg is not None and c not in cumulative_set:
-            _overlay_pitch(ax, tt, pitch_deg)
-        ax_i += 1
-
-    axes[-1].set_xlabel("time [s]")
-    fig.suptitle(f"{display_name} — {mission_id}", y=0.995, fontsize=11)
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
-
-    # Save under reports/<mission_folder>/
-    out_dir = P["REPO_ROOT"] / "reports" / display_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(args.out) if args.out else (out_dir / f"{display_name}_timeseries.png")
-    fig.savefig(out_path, dpi=160)
-    print(f"[ok] saved {out_path}")
+    title = f"{display_name} — {mission_id}"
+    for axis_key, x_values, x_label, suffix in requests:
+        fig = _build_metric_figure(
+            df,
+            x_values,
+            x_label,
+            metric_cols,
+            cumulative_set,
+            filters_cfg,
+            add_speed_panel,
+            pitch_deg,
+            title=f"{title} ({axis_key})",
+        )
+        out_path = resolve_out_path(suffix)
+        fig.savefig(out_path, dpi=160)
+        plt.close(fig)
+        print(f"[ok] saved {out_path}")
 
 if __name__ == "__main__":
     main()

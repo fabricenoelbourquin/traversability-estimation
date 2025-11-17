@@ -7,6 +7,8 @@ visuals:
     enabled: true
     with_speeds: true
     overlay_pitch: true
+    plot_time: true
+    plot_distance: true
 
   map:
     enabled: true
