@@ -162,7 +162,7 @@ def main():
         z_min = np.nanmin(Zs)
         z_max = np.nanmax(Zs)
         current_span = z_max - z_min
-        target_span = max(current_span, 50.0)
+        target_span = max(current_span, 100.0)
         pad = max(0.0, (target_span - current_span) / 2.0)
         ax.set_zlim(z_min - pad, z_max + pad)
 

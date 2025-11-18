@@ -352,9 +352,25 @@ def main():
             # overlay-pitch: default True -> add flag if True
             if yes(vmv_cfg.get("overlay_pitch", True)):
                 cmd.append("--overlay-pitch")
+            if yes(vmv_cfg.get("shade_clusters", False)):
+                cmd.append("--shade-clusters")
             sh(cmd)
         else:
             print(">> Video (metric_viewer) disabled in config.")
+
+        # video_metric_dual_viewer
+        vmd_cfg = (vids_cfg.get("metric_dual_viewer") or {})
+        if yes(vmd_cfg.get("enabled", False)):
+            cmd = [py, "src/visualization/video_metric_dual_viewer.py", *ident_either()]
+            if yes(vmd_cfg.get("overlay_pitch", True)):
+                cmd.append("--overlay-pitch")
+            if yes(vmd_cfg.get("shade_clusters", False)):
+                cmd.append("--shade-clusters")
+            if yes(vmd_cfg.get("add_depth_cam", False)):
+                cmd.append("--add-depth-cam")
+            sh(cmd)
+        else:
+            print(">> Video (metric_dual_viewer) disabled in config.")
 
         # video_dem_vs_quat_pitch_roll
         vdq_cfg = (vids_cfg.get("dem_vs_quat_pitch_roll") or {})

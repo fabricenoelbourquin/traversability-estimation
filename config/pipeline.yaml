@@ -5,7 +5,7 @@ bags:
 visuals:
   timeseries:
     enabled: true
-    with_speeds: true
+    with_speeds: false
     overlay_pitch: true
     plot_time: true
     plot_distance: true
@@ -13,7 +13,7 @@ visuals:
   map:
     enabled: true
     background: both      # swissimg | cluster | both
-    emb_both: true
+    emb_both: false
 
   dem3d:
     enabled: true
@@ -28,5 +28,11 @@ visuals:
       enabled: true
       no_plot_orientation: false   # if true, pipeline adds --no-plot-orientation
       overlay_pitch: true          # if true, pipeline adds --overlay-pitch
+      shade_clusters: true         # add --shade-clusters
+    metric_dual_viewer:
+      enabled: true
+      add_depth_cam: true
+      overlay_pitch: true
+      shade_clusters: true
     dem_vs_quat_pitch_roll:
       enabled: false

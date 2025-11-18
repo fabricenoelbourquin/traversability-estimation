@@ -205,8 +205,10 @@ def main():
         default="/anymal/depth_camera/front_lower/depth/image_rect_raw",
         help="Secondary camera topic (default: front_lower depth camera)",
     )
+    ap.add_argument("--add-depth-cam", action="store_true",
+                    help="Include secondary depth camera pane (default off).")
     ap.add_argument("--primary-camera", choices=["1", "2"], default="1",
-                    help="Select which camera drives the video timeline (default: 1)")
+                    help="Select which camera drives the video timeline (default: 1). Requires --add-depth-cam when choosing camera 2.")
     ap.add_argument("--out", help="Output video path")
     ap.add_argument("--fps", type=float, default=30.0)
     ap.add_argument("--max-frames", type=int, default=None)
@@ -329,71 +331,149 @@ def main():
         return float(np.interp(t_s, metric_t_plot, dist_plot, left=dist_plot[0], right=dist_plot[-1]))
 
     bag1 = find_camera_bag(raw_dir, args.camera_pattern_1, args.camera_topic_1)
-    bag2 = find_camera_bag(raw_dir, args.camera_pattern_2, args.camera_topic_2)
+    bag2 = None
+    if args.add_depth_cam:
+        bag2 = find_camera_bag(raw_dir, args.camera_pattern_2, args.camera_topic_2)
+
+    if not args.add_depth_cam and args.primary_camera == "2":
+        raise SystemExit("--primary-camera=2 requires --add-depth-cam")
 
     primary_idx = 1 if args.primary_camera == "1" else 2
+    if not args.add_depth_cam:
+        primary_idx = 1
+
     bag_primary = bag1 if primary_idx == 1 else bag2
     bag_secondary = bag2 if primary_idx == 1 else bag1
     topic_primary = args.camera_topic_1 if primary_idx == 1 else args.camera_topic_2
     topic_secondary = args.camera_topic_2 if primary_idx == 1 else args.camera_topic_1
 
-    with AnyReader([bag_primary]) as reader_p, AnyReader([bag_secondary]) as reader_s:
+    if args.add_depth_cam:
+        with AnyReader([bag_primary]) as reader_p, AnyReader([bag_secondary]) as reader_s:
+            frame_p0, ts_p0, iter_p, _ = grab_first_frame(reader_p, topic_primary)
+            frame_s0, ts_s0, iter_s, _ = grab_first_frame(reader_s, topic_secondary)
+
+            cam_h_out = 480
+            scale_p = cam_h_out / frame_p0.shape[0]
+            scale_s = cam_h_out / frame_s0.shape[0]
+            cam_w_p = int(frame_p0.shape[1] * scale_p)
+            cam_w_s = int(frame_s0.shape[1] * scale_s)
+            plot_h_out = int(round(max(240, cam_h_out // 2) * 1.2))
+
+            total_w = cam_w_p + cam_w_s
+            total_h = cam_h_out + plot_h_out
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            vw = cv2.VideoWriter(str(out_path), fourcc, args.fps, (total_w, total_h))
+
+            def resize_frame(frame, target_w):
+                return cv2.resize(frame, (target_w, cam_h_out))
+
+            sec_current_frame = cv2.resize(frame_s0, (cam_w_s, cam_h_out))
+            sec_current_frame = cv2.flip(sec_current_frame, 0)
+            sec_current_ts = ts_s0
+            sec_future = None  # holds the first frame after target
+
+            def advance_secondary(target_ns: int):
+                nonlocal sec_current_frame, sec_current_ts, sec_future
+                # If we already peeked a future frame and it's now behind target, promote it
+                if sec_future is not None and sec_future[1] <= target_ns:
+                    sec_current_frame, sec_current_ts = sec_future
+                    sec_future = None
+                while True:
+                    nxt = next_frame(reader_s, iter_s)
+                    if nxt[0] is None:
+                        break
+                    frame, ts = nxt
+                    if frame is None:
+                        continue
+                    frame_resized = cv2.resize(frame, (cam_w_s, cam_h_out))
+                    frame_resized = cv2.flip(frame_resized, 0)
+                    if ts <= target_ns:
+                        sec_current_frame = frame_resized
+                        sec_current_ts = ts
+                    else:
+                        sec_future = (frame_resized, ts)
+                        break
+
+            # Precompute camera1 frame array for first frame
+            frame_p_resized = resize_frame(frame_p0, cam_w_p)
+
+            def compose(cursor_t: float, frame_primary: np.ndarray) -> np.ndarray:
+                cursor_dist = time_to_dist(cursor_t)
+                plot_time = render_plot_to_array(fig_time, canvas_time, vline_time, cursor_t, plot_h_out, cam_w_p)
+                plot_dist = render_plot_to_array(fig_dist, canvas_dist, vline_dist, cursor_dist, plot_h_out, cam_w_s)
+                plot_time_bgr = cv2.cvtColor(plot_time, cv2.COLOR_RGB2BGR)
+                plot_dist_bgr = cv2.cvtColor(plot_dist, cv2.COLOR_RGB2BGR)
+                top = np.hstack([frame_primary, sec_current_frame])
+                bottom = np.hstack([plot_time_bgr, plot_dist_bgr])
+                return np.vstack([top, bottom])
+
+            written = 0
+
+            def process_frame(frame, ts_ns):
+                nonlocal written
+                cursor_t = (ts_ns - t0_ns) / 1e9
+                if cursor_t < win_min or cursor_t > win_max:
+                    return
+                advance_secondary(ts_ns)
+                composed = compose(cursor_t, resize_frame(frame, cam_w_p))
+                vw.write(composed)
+                written += 1
+
+            process_frame(frame_p0, ts_p0)
+            if args.max_frames is not None and written >= args.max_frames:
+                vw.release()
+                print(f"[done] wrote {written} frames to {out_path}")
+                return
+
+            for conn, ts, raw in iter_p:
+                msg = reader_p.deserialize(raw, conn.msgtype)
+                if "CompressedImage" in conn.msgtype:
+                    arr = np.frombuffer(msg.data, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                else:
+                    frame = message_to_cvimage(msg)
+                cam_ts_ns = message_time_ns(msg, ts, stream=conn.topic)
+                process_frame(frame, cam_ts_ns)
+                if args.max_frames is not None and written >= args.max_frames:
+                    break
+
+        vw.release()
+        plt.close(fig_time)
+        plt.close(fig_dist)
+        print(f"[ok] wrote {written} frames to {out_path}")
+        print(f"     input synced: {metrics_path}")
+        print(f"     camera1 bag: {bag1}")
+        print(f"     camera2 bag: {bag2}")
+        return
+
+    # Single camera layout
+    with AnyReader([bag_primary]) as reader_p:
         frame_p0, ts_p0, iter_p, _ = grab_first_frame(reader_p, topic_primary)
-        frame_s0, ts_s0, iter_s, _ = grab_first_frame(reader_s, topic_secondary)
 
         cam_h_out = 480
         scale_p = cam_h_out / frame_p0.shape[0]
-        scale_s = cam_h_out / frame_s0.shape[0]
         cam_w_p = int(frame_p0.shape[1] * scale_p)
-        cam_w_s = int(frame_s0.shape[1] * scale_s)
-        plot_h_out = max(240, cam_h_out // 2)
-
-        total_w = cam_w_p + cam_w_s
-        total_h = cam_h_out + plot_h_out
+        plot_col_w = int(round(cam_w_p * 0.9))
+        time_plot_h = int(round(cam_h_out * 0.55))
+        dist_plot_h = cam_h_out - time_plot_h
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        vw = cv2.VideoWriter(str(out_path), fourcc, args.fps, (total_w, total_h))
+        vw = cv2.VideoWriter(str(out_path), fourcc, args.fps, (cam_w_p + plot_col_w, cam_h_out))
 
         def resize_frame(frame, target_w):
             return cv2.resize(frame, (target_w, cam_h_out))
 
-        sec_current_frame = cv2.resize(frame_s0, (cam_w_s, cam_h_out))
-        sec_current_ts = ts_s0
-        sec_future = None  # holds the first frame after target
-
-        def advance_secondary(target_ns: int):
-            nonlocal sec_current_frame, sec_current_ts, sec_future
-            # If we already peeked a future frame and it's now behind target, promote it
-            if sec_future is not None and sec_future[1] <= target_ns:
-                sec_current_frame, sec_current_ts = sec_future
-                sec_future = None
-            while True:
-                nxt = next_frame(reader_s, iter_s)
-                if nxt[0] is None:
-                    break
-                frame, ts = nxt
-                if frame is None:
-                    continue
-                frame_resized = cv2.resize(frame, (cam_w_s, cam_h_out))
-                if ts <= target_ns:
-                    sec_current_frame = frame_resized
-                    sec_current_ts = ts
-                else:
-                    sec_future = (frame_resized, ts)
-                    break
-
-        # Precompute camera1 frame array for first frame
-        frame_p_resized = resize_frame(frame_p0, cam_w_p)
-
         def compose(cursor_t: float, frame_primary: np.ndarray) -> np.ndarray:
             cursor_dist = time_to_dist(cursor_t)
-            plot_time = render_plot_to_array(fig_time, canvas_time, vline_time, cursor_t, plot_h_out, cam_w_p)
-            plot_dist = render_plot_to_array(fig_dist, canvas_dist, vline_dist, cursor_dist, plot_h_out, cam_w_s)
+            plot_time = render_plot_to_array(fig_time, canvas_time, vline_time, cursor_t, time_plot_h, plot_col_w)
+            plot_dist = render_plot_to_array(fig_dist, canvas_dist, vline_dist, cursor_dist, dist_plot_h, plot_col_w)
             plot_time_bgr = cv2.cvtColor(plot_time, cv2.COLOR_RGB2BGR)
             plot_dist_bgr = cv2.cvtColor(plot_dist, cv2.COLOR_RGB2BGR)
-            top = np.hstack([frame_primary, sec_current_frame])
-            bottom = np.hstack([plot_time_bgr, plot_dist_bgr])
-            return np.vstack([top, bottom])
+            right_col = np.vstack([plot_time_bgr, plot_dist_bgr])
+            return np.hstack([frame_primary, right_col])
 
         written = 0
 
@@ -402,7 +482,6 @@ def main():
             cursor_t = (ts_ns - t0_ns) / 1e9
             if cursor_t < win_min or cursor_t > win_max:
                 return
-            advance_secondary(ts_ns)
             composed = compose(cursor_t, resize_frame(frame, cam_w_p))
             vw.write(composed)
             written += 1
@@ -433,7 +512,8 @@ def main():
     print(f"[ok] wrote {written} frames to {out_path}")
     print(f"     input synced: {metrics_path}")
     print(f"     camera1 bag: {bag1}")
-    print(f"     camera2 bag: {bag2}")
+    if args.add_depth_cam:
+        print(f"     camera2 bag: {bag2}")
 
 
 if __name__ == "__main__":
