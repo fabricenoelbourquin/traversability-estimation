@@ -1,6 +1,7 @@
 bags:
   enabled: true
   camera: true
+  depth: true
 
 visuals:
   timeseries:
@@ -20,12 +21,12 @@ visuals:
     plot_trajectory: true   # if true, pipeline passes --plot-trajectory
 
   compare_dem_vs_quat_pitch_roll:
-    enabled: true
+    enabled: false
     smooth_win: 1           # >1 applies smoothing; pipeline passes --smooth-win N
 
   videos:
     metric_viewer:
-      enabled: true
+      enabled: false
       no_plot_orientation: false   # if true, pipeline adds --no-plot-orientation
       overlay_pitch: true          # if true, pipeline adds --overlay-pitch
       shade_clusters: true         # add --shade-clusters

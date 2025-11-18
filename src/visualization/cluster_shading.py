@@ -34,6 +34,26 @@ class ClusterShading:
     description: str
 
 
+@dataclass
+class ClusterSample:
+    labels: np.ndarray
+    n_clusters: int
+    raster_path: Path
+
+
+def _determine_cluster_count(requested: int | None, inferred: int | None, max_label: int, labels: np.ndarray) -> int:
+    if requested is not None and requested > 0:
+        return int(requested)
+    if inferred is not None and inferred > 0:
+        return int(inferred)
+    if max_label >= 0:
+        return int(max_label + 1)
+    finite = labels[np.isfinite(labels)]
+    if finite.size:
+        return int(np.nanmax(finite)) + 1
+    return 0
+
+
 def _cluster_palette(n_clusters: int) -> list[tuple[float, float, float]]:
     n = max(1, int(n_clusters))
     palette = []
@@ -152,14 +172,13 @@ def _sample_cluster_labels(lat: np.ndarray, lon: np.ndarray, raster_path: Path) 
     return labels, max_label
 
 
-def prepare_cluster_shading(
+def sample_cluster_labels_for_dataframe(
     df: pd.DataFrame,
     mission_maps: Path,
     emb: str,
     kmeans: int | None,
-    alpha: float,
     mask: np.ndarray | None = None,
-) -> ClusterShading | None:
+) -> ClusterSample | None:
     if rasterio is None or Transformer is None or rowcol is None:
         print("[warn] Cluster shading requires rasterio + pyproj; install them to enable this feature.")
         return None
@@ -186,16 +205,31 @@ def prepare_cluster_shading(
     except Exception as exc:
         print(f"[warn] Unable to sample cluster raster ({raster_path}): {exc}")
         return None
-    segments = _segment_cluster_ids(labels)
+    n_clusters = _determine_cluster_count(kmeans, inferred_k, max_label, labels)
+    return ClusterSample(labels=labels, n_clusters=n_clusters, raster_path=raster_path)
+
+
+def prepare_cluster_shading(
+    df: pd.DataFrame,
+    mission_maps: Path,
+    emb: str,
+    kmeans: int | None,
+    alpha: float,
+    mask: np.ndarray | None = None,
+) -> ClusterShading | None:
+    sample = sample_cluster_labels_for_dataframe(df, mission_maps, emb, kmeans, mask=mask)
+    if sample is None:
+        return None
+    segments = _segment_cluster_ids(sample.labels)
     if not segments:
         print("[warn] Cluster shading requested but no valid cluster samples were found.")
         return None
-    palette_len = inferred_k if inferred_k is not None else (max_label + 1 if max_label >= 0 else 0)
+    palette_len = sample.n_clusters
     if palette_len <= 0:
         palette_len = int(max(seg[2] for seg in segments) + 1)
     palette = _cluster_palette(palette_len)
     colors = {cid: palette[cid % len(palette)] for cid in {seg[2] for seg in segments}}
-    desc = f"k={palette_len}, {emb} ({raster_path.name})"
+    desc = f"k={palette_len}, {emb} ({sample.raster_path.name})"
     print(f"[info] Cluster shading enabled using {desc}")
     return ClusterShading(segments=segments, colors=colors, alpha=max(0.0, float(alpha)), description=desc)
 
@@ -217,7 +251,9 @@ def add_cluster_background(ax, x_values: np.ndarray, shading: ClusterShading | N
 
 __all__ = [
     "ClusterShading",
+    "ClusterSample",
     "apply_cluster_shading",
+    "sample_cluster_labels_for_dataframe",
     "prepare_cluster_shading",
     "add_cluster_background",
 ]
