@@ -1,0 +1,36 @@
+2024-11-14-13-45-37_hdr_front.bag:
+  • /boxi/hdr/front/camera_info
+  • /boxi/hdr/front/image_raw/compressed
+
+2024-11-14-13-45-37_hdr_left.bag:
+  • /boxi/hdr/left/camera_info
+  • /boxi/hdr/left/image_raw/compressed
+
+2024-11-14-13-45-37_hdr_right.bag:
+  • /boxi/hdr/right/camera_info
+  • /boxi/hdr/right/image_raw/compressed
+
+2024-11-14-13-45-37_anymal_depth_cameras.bag:
+  • /anymal/depth_camera/front_lower/depth/camera_info
+  • /anymal/depth_camera/front_lower/depth/image_rect_raw
+  • /anymal/depth_camera/front_upper/depth/camera_info
+  • /anymal/depth_camera/front_upper/depth/image_rect_raw
+  • /anymal/depth_camera/left/depth/camera_info
+  • /anymal/depth_camera/left/depth/image_rect_raw
+  • /anymal/depth_camera/rear_lower/depth/camera_info
+  • /anymal/depth_camera/rear_lower/depth/image_rect_raw
+  • /anymal/depth_camera/rear_upper/depth/camera_info
+  • /anymal/depth_camera/rear_upper/depth/image_rect_raw
+  • /anymal/depth_camera/right/depth/camera_info
+  • /anymal/depth_camera/right/depth/image_rect_raw
+
+2024-11-14-13-45-37_zed2i_images.bag:
+  • /boxi/zed2i/left/camera_info
+  • /boxi/zed2i/left/image_raw/compressed
+  • /boxi/zed2i/right/camera_info
+  • /boxi/zed2i/right/image_raw/compressed
+
+2024-11-14-13-45-37_zed2i_depth.bag:
+  • /boxi/zed2i/confidence/image_raw/compressed
+  • /boxi/zed2i/depth/camera_info
+  • /boxi/zed2i/depth/image_raw/compressed
