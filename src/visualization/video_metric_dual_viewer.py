@@ -281,7 +281,6 @@ def main():
             qw, qx, qy, qz = get_quaternion_block(df)
             qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
             _, pitch_deg, _ = euler_zyx_from_qWB(qw, qx, qy, qz)
-            pitch_deg = -pitch_deg
             pitch_plot = pitch_deg[mask_window]
         except Exception as exc:
             print(f"[warn] Unable to compute pitch overlay: {exc}")
