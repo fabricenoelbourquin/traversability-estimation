@@ -200,8 +200,24 @@ def prepare_cluster_shading(
     return ClusterShading(segments=segments, colors=colors, alpha=max(0.0, float(alpha)), description=desc)
 
 
+def add_cluster_background(ax, x_values: np.ndarray, shading: ClusterShading | None):
+    """Create a transparent twin axis behind `ax` and paint cluster spans on it."""
+    if shading is None:
+        return None
+    ax.set_facecolor("none")
+    bg = ax.twinx()
+    bg.set_zorder(ax.get_zorder() - 2.0)
+    bg.patch.set_alpha(0.0)
+    bg.get_yaxis().set_visible(False)
+    for spine in bg.spines.values():
+        spine.set_visible(False)
+    apply_cluster_shading(bg, x_values, shading)
+    return bg
+
+
 __all__ = [
     "ClusterShading",
     "apply_cluster_shading",
     "prepare_cluster_shading",
+    "add_cluster_background",
 ]

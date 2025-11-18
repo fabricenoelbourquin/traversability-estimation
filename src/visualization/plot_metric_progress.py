@@ -32,13 +32,15 @@ from utils.missions import resolve_mission
 from utils.filtering import filter_signal, load_metrics_config
 from visualization.cluster_shading import (
     ClusterShading,
-    apply_cluster_shading,
+    add_cluster_background,
     prepare_cluster_shading,
 )
 
 PITCH_LABEL = "pitch [deg]"
 PITCH_COLOR = "tab:orange"
 ZERO_LINE_STYLE = {"color": "0.3", "linewidth": 0.7, "alpha": 0.55, "linestyle": "--"}
+METRIC_LINE_ZORDER = 3.0
+PITCH_LINE_ZORDER = 2.2
 
 
 def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -93,8 +95,11 @@ def _compute_pitch_deg(df: pd.DataFrame) -> np.ndarray:
 
 def _overlay_pitch(ax, xx: np.ndarray, pitch_deg: np.ndarray):
     """Overlay pitch on a twin axis so metrics can be compared to slope."""
+    ax.set_facecolor("none")
     ax2 = ax.twinx()
-    ax2.plot(xx, pitch_deg, color=PITCH_COLOR, linewidth=1.2, label=PITCH_LABEL)
+    ax2.set_zorder(ax.get_zorder() - 1.0)
+    ax2.patch.set_alpha(0.0)
+    ax2.plot(xx, pitch_deg, color=PITCH_COLOR, linewidth=1.2, label=PITCH_LABEL, zorder=PITCH_LINE_ZORDER)
     ax2.set_ylabel(PITCH_LABEL, color=PITCH_COLOR)
     ax2.tick_params(axis="y", colors=PITCH_COLOR)
     ax2.spines["right"].set_color(PITCH_COLOR)
@@ -176,8 +181,9 @@ def _build_metric_figure(
 
     ax_i = 0
     if add_speed_panel:
-        if cluster_shading is not None:
-            apply_cluster_shading(axes[ax_i], x_values, cluster_shading)
+        add_cluster_background(axes[ax_i], x_values, cluster_shading)
+        if pitch_deg is not None:
+            _overlay_pitch(axes[ax_i], x_values, pitch_deg)
         if "v_cmd" in df.columns:
             v_cmd = df["v_cmd"]
         elif {"v_cmd_x", "v_cmd_y"}.issubset(df.columns):
@@ -193,31 +199,30 @@ def _build_metric_figure(
             v_act = None
 
         if v_cmd is not None:
-            axes[ax_i].plot(x_values, v_cmd, label="v_cmd")
+            axes[ax_i].plot(x_values, v_cmd, label="v_cmd", zorder=METRIC_LINE_ZORDER)
         if v_act is not None:
-            axes[ax_i].plot(x_values, v_act, label="v_actual")
+            axes[ax_i].plot(x_values, v_act, label="v_actual", zorder=METRIC_LINE_ZORDER)
         axes[ax_i].set_ylabel("speed [m/s]")
         axes[ax_i].legend(loc="upper right")
         axes[ax_i].set_title("Commanded vs actual speed")
         _add_zero_line(axes[ax_i])
-        if pitch_deg is not None:
-            _overlay_pitch(axes[ax_i], x_values, pitch_deg)
         ax_i += 1
 
     for c in metric_cols:
         ax = axes[ax_i]
-        if cluster_shading is not None:
-            apply_cluster_shading(ax, x_values, cluster_shading)
+        add_cluster_background(ax, x_values, cluster_shading)
+        should_overlay_pitch = pitch_deg is not None and c not in cumulative_set
+        if should_overlay_pitch:
+            _overlay_pitch(ax, x_values, pitch_deg)
         raw_vals = df[c].to_numpy(dtype=np.float64)
         filt_vals = filter_signal(raw_vals, c, filters_cfg=filters_cfg, log_fn=print)
         series = filt_vals if filt_vals is not None else raw_vals
-        ax.plot(x_values, series, label=c)
+        ax.plot(x_values, series, label=c, zorder=METRIC_LINE_ZORDER)
         ax.set_ylabel(c)
         ax.grid(True, alpha=0.25)
         _add_zero_line(ax)
         ax.legend(loc="upper right", frameon=False)
-        if pitch_deg is not None and c not in cumulative_set:
-            _overlay_pitch(ax, x_values, pitch_deg)
+        # overlay already handled above to keep metric on top
         ax_i += 1
 
     axes[-1].set_xlabel(x_label)
