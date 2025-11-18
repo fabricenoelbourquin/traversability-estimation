@@ -21,3 +21,5 @@ extras:
   anymal_imu: "anymal_imu"
   camera: "hdr_front"
   zed: "zed2i_images"
+  depth: "anymal_depth_cameras"
+  depth_camera: "anymal_depth_cameras"
