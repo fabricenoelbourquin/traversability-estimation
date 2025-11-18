@@ -39,9 +39,12 @@ from utils.rosbag_tools import filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
 from visualization.cluster_shading import (
     ClusterShading,
-    apply_cluster_shading,
+    add_cluster_background,
     prepare_cluster_shading,
 )
+
+METRIC_LINE_ZORDER = 3.0
+PITCH_LINE_ZORDER = 2.2
 
 def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
     if hz is not None:
@@ -112,25 +115,28 @@ def build_metric_plot_with_optional_pitch(
     fig_h = max(1, height_px) / dpi
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
 
-    if cluster_shading is not None:
-        apply_cluster_shading(ax, times_s, cluster_shading)
+    add_cluster_background(ax, times_s, cluster_shading)
+
+    if pitch_vals is not None:
+        ax2 = ax.twinx()
+        ax.set_facecolor("none")
+        ax2.set_zorder(ax.get_zorder() - 1.0)
+        ax2.patch.set_alpha(0.0)
+        ax2.plot(times_s, pitch_vals, lw=1.4, color="orange", label=pitch_label, zorder=PITCH_LINE_ZORDER)
+        ax2.set_ylabel(pitch_label, color="orange")
+        ax2.tick_params(axis="y", colors="orange")
+        ax2.spines["right"].set_color("orange")
+    else:
+        ax2 = None
 
     # primary: metric
-    ax.plot(times_s, metric_vals, lw=1.2, label=metric_label, zorder=2)
+    ax.plot(times_s, metric_vals, lw=1.2, label=metric_label, zorder=METRIC_LINE_ZORDER)
     vline = ax.axvline(0.0, color="red", lw=1.0, zorder=4)  # time cursor
     ax.set_xlim(times_s.min(), times_s.max())
     ax.set_xlabel("time [s]")
     ax.set_ylabel(metric_label)
 
-    if pitch_vals is not None:
-        ax2 = ax.twinx()
-        ax2.set_zorder(ax.get_zorder() + 1)
-        ax2.patch.set_alpha(0.0)
-        ax2.plot(times_s, pitch_vals, lw=1.4, color="orange", label=pitch_label, zorder=3)
-        ax2.set_ylabel(pitch_label, color="orange")
-        ax2.tick_params(axis="y", colors="orange")
-        ax2.spines["right"].set_color("orange")
-        # Optional: one combined title
+    if ax2 is not None:
         ax.set_title(f"{metric_label}  +  {pitch_label}")
     else:
         ax.set_title(metric_label)
