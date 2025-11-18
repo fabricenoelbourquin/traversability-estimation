@@ -168,8 +168,8 @@ def main():
 
     # Stage toggles
     skip_download = args.skip_download or args.already_downloaded
-    skip_extract  = args.skip_extract  or args.already_downloaded
-    skip_sync     = args.skip_sync     or args.already_downloaded
+    skip_extract  = args.skip_extract
+    skip_sync     = args.skip_sync
     skip_swissimg = args.skip_swissimg
     skip_cluster  = args.skip_cluster
     skip_visuals  = args.skip_visuals
