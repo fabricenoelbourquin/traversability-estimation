@@ -37,6 +37,11 @@ from utils.missions import resolve_mission
 from utils.ros_time import message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
+from visualization.cluster_shading import (
+    ClusterShading,
+    apply_cluster_shading,
+    prepare_cluster_shading,
+)
 
 def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
     if hz is not None:
@@ -99,12 +104,16 @@ def build_metric_plot_with_optional_pitch(
     height_px: int,
     pitch_vals: np.ndarray | None = None,
     pitch_label: str = "pitch [deg]",
+    cluster_shading: ClusterShading | None = None,
 ):
     """Build the bottom metric plot. If pitch_vals is provided, overlay it on a twin Y-axis."""
     dpi = 100
     fig_w = max(1, width_px) / dpi
     fig_h = max(1, height_px) / dpi
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+
+    if cluster_shading is not None:
+        apply_cluster_shading(ax, times_s, cluster_shading)
 
     # primary: metric
     ax.plot(times_s, metric_vals, lw=1.2, label=metric_label, zorder=2)
@@ -245,6 +254,29 @@ def main():
         action="store_true",
         help="Overlay pitch [deg] on the metric plot with a secondary Y-axis.",
     )
+    ap.add_argument(
+        "--shade-clusters",
+        action="store_true",
+        help="Color the metric plot background by cluster assignments (default: off).",
+    )
+    ap.add_argument(
+        "--cluster-embedding",
+        choices=["dino", "stego"],
+        default="dino",
+        help="Embedding head to use for cluster shading (default: dino).",
+    )
+    ap.add_argument(
+        "--cluster-kmeans",
+        type=int,
+        default=None,
+        help="Explicit KMeans cluster count (default: autodetect latest).",
+    )
+    ap.add_argument(
+        "--cluster-alpha",
+        type=float,
+        default=0.12,
+        help="Alpha for cluster background shading.",
+    )
     ap.add_argument("--tmin", type=float, default=None, help="Start time [s] relative to the video time zero (min).")
     ap.add_argument("--tmax", type=float, default=None, help="End time [s] relative to the video time zero (max).")
     args = ap.parse_args()
@@ -365,6 +397,23 @@ def main():
             mask_window = np.ones_like(metric_t, dtype=bool)
             win_min = float(metric_t.min())
             win_max = float(metric_t.max())
+
+        cluster_shading = None
+        if args.shade_clusters:
+            mission_maps = Path(mp.maps)
+            try:
+                cluster_shading = prepare_cluster_shading(
+                    df,
+                    mission_maps,
+                    args.cluster_embedding,
+                    args.cluster_kmeans,
+                    args.cluster_alpha,
+                    mask=mask_window,
+                )
+            except Exception as exc:
+                print(f"[warn] Failed to prepare cluster shading: {exc}")
+                cluster_shading = None
+
         metric_t_plot = metric_t[mask_window]
         metric_vals_plot = metric_vals[mask_window]
         if args.overlay_pitch and have_orientation and pitch_deg is not None:
@@ -386,6 +435,7 @@ def main():
                 height_px=plot_h_out,
                 pitch_vals=pitch_plot,
                 pitch_label="pitch [deg]",
+                cluster_shading=cluster_shading,
             )
         else:
             fig_m, ax_m, vline_m, canvas_m = build_metric_plot_with_optional_pitch(
@@ -395,6 +445,7 @@ def main():
                 width_px=plot_w_out,
                 height_px=plot_h_out,
                 pitch_vals=None,
+                cluster_shading=cluster_shading,
             )
 
         # Build orientation plots if requested
