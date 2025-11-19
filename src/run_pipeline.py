@@ -122,6 +122,8 @@ def main():
     p.add_argument("--config", type=str, default="config/pipeline.yaml", help="YAML config path")
     p.add_argument("--already-downloaded", action="store_true",
                    help="Skip download + extract + sync; recompute metrics and make plots.")
+    p.add_argument("--metrics-only", action="store_true",
+                   help="Only run compute_metrics.py (skip download/extract/sync and all later stages).")
     # optional fine-grained skips
     p.add_argument("--skip-download", action="store_true")
     p.add_argument("--skip-extract", action="store_true")
@@ -167,13 +169,16 @@ def main():
         return ["--mission-id", mission_id]
 
     # Stage toggles
-    skip_download = args.skip_download or args.already_downloaded
-    skip_extract  = args.skip_extract
-    skip_sync     = args.skip_sync
-    skip_swissimg = args.skip_swissimg
-    skip_cluster  = args.skip_cluster
-    skip_visuals  = args.skip_visuals
-    skip_dem_slope = args.skip_dem_slope
+    metrics_only = args.metrics_only
+    if metrics_only:
+        print(">> Metrics-only mode enabled: skipping download/extract/sync and all post-metric stages.")
+    skip_download = args.skip_download or args.already_downloaded or metrics_only
+    skip_extract  = args.skip_extract or metrics_only
+    skip_sync     = args.skip_sync or metrics_only
+    skip_swissimg = args.skip_swissimg or metrics_only
+    skip_cluster  = args.skip_cluster or metrics_only
+    skip_visuals  = args.skip_visuals or metrics_only
+    skip_dem_slope = args.skip_dem_slope or metrics_only
     py = sys.executable
 
     # 1) Download (this script accepts id + name together)

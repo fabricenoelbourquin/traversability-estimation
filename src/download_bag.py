@@ -15,7 +15,7 @@ Examples:
   python src/download_bag.py \
   --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e \
   --mission-name ETH-1 \
-  --extra camera
+  --extra camera depth
 """
 
 from __future__ import annotations

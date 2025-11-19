@@ -6,6 +6,7 @@ metrics:
     - torque_L1_rate
     - power_mech
     - power_mech_signed
+    - power_per_speed
     - energy_pos_cum
 #    - cot_running
   cumulative:
@@ -15,6 +16,7 @@ metrics:
   separate_output: true 
 params:
   max_speed_mps: 1
+  min_speed_for_power_norm: 0.08
 
 # Parameters for the local-plane-fitting DEM slope calculation
 dem_slope_params:
@@ -70,6 +72,24 @@ filters:
       window: 5
     - type: moving_average
       window: 25
+
+  power_per_speed_speed:
+    - type: moving_median
+      window: 5
+    - type: moving_average
+      window: 35
+
+  power_per_speed_power:
+    - type: moving_median
+      window: 1
+    - type: moving_average
+      window: 1
+
+  power_per_speed:
+    - type: moving_median
+      window: 7
+    - type: moving_average
+      window: 35
 
 robot:
   mass_kg: 30.0      
