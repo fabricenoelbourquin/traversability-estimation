@@ -139,6 +139,49 @@ def power_mech_signed(df: pd.DataFrame, cfg: dict) -> pd.Series:
         return _nan_series(df)
     return terms.sum(axis=1)
 
+@metric("power_per_speed")
+def power_per_speed(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """
+    Mechanical power normalized by actual speed [W / (m/s)].
+    Samples with |v_actual| below a configurable threshold are clamped to 0.
+    """
+    d = _ensure_speed_columns(df)
+    if "v_actual" not in d.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    power = REGISTRY["power_mech"](df, cfg)
+    if power.isna().all():
+        return pd.Series(np.nan, index=df.index)
+
+    params = cfg.get("params") or {}
+    min_speed = float(params.get("min_speed_for_power_norm", 0.1))
+    min_speed = max(min_speed, 1e-4)
+
+    filters_cfg = cfg.get("filters", {})
+
+    speed_raw = d["v_actual"].to_numpy(dtype=np.float64)
+    speed_filtered = filter_signal(speed_raw, "power_per_speed_speed", filters_cfg=filters_cfg, log_fn=None)
+    speed_use = speed_filtered if speed_filtered is not None else speed_raw
+    speed_mag = np.abs(speed_use)
+
+    power_vals = power.to_numpy(dtype=np.float64)
+    power_filtered = filter_signal(power_vals, "power_per_speed_power", filters_cfg=filters_cfg, log_fn=None)
+    power_use = power_vals if power_filtered is None else power_filtered
+
+    out = np.full_like(speed_mag, np.nan, dtype=np.float64)
+    valid = np.isfinite(speed_mag) & np.isfinite(power_use)
+    if not np.any(valid):
+        return pd.Series(out, index=df.index)
+
+    slow_mask = valid & (speed_mag < min_speed)
+    fast_mask = valid & ~slow_mask
+    out[slow_mask] = 0.0
+    out[fast_mask] = power_use[fast_mask] / speed_mag[fast_mask]
+
+    ratio_filtered = filter_signal(out, "power_per_speed", filters_cfg=filters_cfg, log_fn=None)
+    final_vals = out if ratio_filtered is None else ratio_filtered
+    return pd.Series(final_vals, index=df.index)
+
 @metric("energy_pos_cum")
 def energy_pos_cum(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """

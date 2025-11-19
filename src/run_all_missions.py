@@ -3,13 +3,14 @@
 Run the full pipeline (run_pipeline.py) for multiple missions in parallel.
 
 Usage:
-  python src/run_all_missions.py --missions config/missions_to_run.json --max-workers 3 --already-downloaded
+  python src/run_all_missions.py --missions config/missions_to_run.json --max-workers 3 --already-downloaded --metrics-only
 
 Notes:
   - Missions file: list of {"id": "...", "name": "..."}.
   - Each run calls: `python src/run_pipeline.py --mission-id <id> --mission-name <name>`.
   - Concurrency defaults to half of available cores.
   - You can use `--already-downloaded` to skip bag downloads.
+  - Add `--metrics-only` to only run compute_metrics and skip all later stages.
 
 """
 
@@ -19,10 +20,10 @@ import concurrent.futures
 import subprocess
 import sys
 import json
-import os
 from pathlib import Path
 
-def run_one(mission_id: str, mission_name: str | None, already_downloaded: bool, config: str | None) -> int:
+def run_one(mission_id: str, mission_name: str | None, already_downloaded: bool,
+            metrics_only: bool, config: str | None) -> int:
     """Run one mission through the pipeline, return exit code."""
     py = sys.executable
     cmd = [py, "src/run_pipeline.py", "--mission-id", mission_id]
@@ -30,6 +31,8 @@ def run_one(mission_id: str, mission_name: str | None, already_downloaded: bool,
         cmd += ["--mission-name", mission_name]
     if already_downloaded:
         cmd.append("--already-downloaded")
+    if metrics_only:
+        cmd.append("--metrics-only")
     if config:
         cmd += ["--config", config]
 
@@ -49,6 +52,8 @@ def main():
                     help="Number of parallel workers (default: half of available cores)")
     ap.add_argument("--already-downloaded", action="store_true",
                     help="Skip download/extract/sync stages for all missions")
+    ap.add_argument("--metrics-only", action="store_true",
+                    help="Only run compute_metrics.py for each mission (skip all other stages)")
     args = ap.parse_args()
 
     with open(args.missions) as f:
@@ -68,7 +73,8 @@ def main():
         for m in missions:
             mission_id = m["id"]
             mission_name = m.get("name")
-            fut = ex.submit(run_one, mission_id, mission_name, args.already_downloaded, args.config)
+            fut = ex.submit(run_one, mission_id, mission_name,
+                            args.already_downloaded, args.metrics_only, args.config)
             futs.append((mission_name or mission_id, fut))
 
         for name, fut in futs:

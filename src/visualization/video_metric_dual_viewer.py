@@ -12,7 +12,7 @@ Usage example:
          --metric power_mech --overlay-pitch --shade-clusters
 
 python src/visualization/video_metric_dual_viewer.py --mission ETH-1 \
-    --overlay-pitch --shade-clusters
+    --overlay-pitch --shade-clusters --add-depth-cam
 """
 
 #!/usr/bin/env python3
