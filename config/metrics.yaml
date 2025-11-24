@@ -1,17 +1,17 @@
 metrics:
   names:
     - speed_error_abs
-    - joint_travel_rate_L1
-    - joint_travel_cum_L1
-    - torque_L1_rate
-    - power_mech
-    - power_mech_signed
-    - power_per_speed
-    - energy_pos_cum
+#    - joint_travel_rate_L1
+#    - joint_travel_cum_L1
+#    - torque_L1_rate
+#    - power_mech
+#    - power_mech_signed
+    - cost_of_transport
+#    - energy_pos_cum
 #    - cot_running
   cumulative:
-    - joint_travel_cum_L1
-    - energy_pos_cum
+#    - joint_travel_cum_L1
+#    - energy_pos_cum
 #    - cot_running
   separate_output: true 
 params:
@@ -73,19 +73,19 @@ filters:
     - type: moving_average
       window: 25
 
-  power_per_speed_speed:
+  cost_of_transport_speed:
     - type: moving_median
       window: 5
     - type: moving_average
       window: 35
 
-  power_per_speed_power:
+  cost_of_transport_power:
     - type: moving_median
       window: 1
     - type: moving_average
       window: 1
 
-  power_per_speed:
+  cost_of_transport:
     - type: moving_median
       window: 7
     - type: moving_average

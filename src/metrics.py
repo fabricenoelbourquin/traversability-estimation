@@ -139,14 +139,21 @@ def power_mech_signed(df: pd.DataFrame, cfg: dict) -> pd.Series:
         return _nan_series(df)
     return terms.sum(axis=1)
 
-@metric("power_per_speed")
-def power_per_speed(df: pd.DataFrame, cfg: dict) -> pd.Series:
+@metric("cost_of_transport")
+def cost_of_transport(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
-    Mechanical power normalized by actual speed [W / (m/s)].
+    Instantaneous Cost of Transport (dimensionless):
+      COT = power_mech / (m * g * |v_actual|).
     Samples with |v_actual| below a configurable threshold are clamped to 0.
     """
     d = _ensure_speed_columns(df)
     if "v_actual" not in d.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    robot = cfg.get("robot") or {}
+    m = float(robot.get("mass_kg", np.nan))
+    g = float(robot.get("gravity", 9.81))
+    if not np.isfinite(m) or m <= 0.0 or not np.isfinite(g) or g <= 0.0:
         return pd.Series(np.nan, index=df.index)
 
     power = REGISTRY["power_mech"](df, cfg)
@@ -160,12 +167,12 @@ def power_per_speed(df: pd.DataFrame, cfg: dict) -> pd.Series:
     filters_cfg = cfg.get("filters", {})
 
     speed_raw = d["v_actual"].to_numpy(dtype=np.float64)
-    speed_filtered = filter_signal(speed_raw, "power_per_speed_speed", filters_cfg=filters_cfg, log_fn=None)
+    speed_filtered = filter_signal(speed_raw, "cost_of_transport_speed", filters_cfg=filters_cfg, log_fn=None)
     speed_use = speed_filtered if speed_filtered is not None else speed_raw
     speed_mag = np.abs(speed_use)
 
     power_vals = power.to_numpy(dtype=np.float64)
-    power_filtered = filter_signal(power_vals, "power_per_speed_power", filters_cfg=filters_cfg, log_fn=None)
+    power_filtered = filter_signal(power_vals, "cost_of_transport_power", filters_cfg=filters_cfg, log_fn=None)
     power_use = power_vals if power_filtered is None else power_filtered
 
     out = np.full_like(speed_mag, np.nan, dtype=np.float64)
@@ -176,9 +183,9 @@ def power_per_speed(df: pd.DataFrame, cfg: dict) -> pd.Series:
     slow_mask = valid & (speed_mag < min_speed)
     fast_mask = valid & ~slow_mask
     out[slow_mask] = 0.0
-    out[fast_mask] = power_use[fast_mask] / speed_mag[fast_mask]
+    out[fast_mask] = power_use[fast_mask] / (m * g * speed_mag[fast_mask])
 
-    ratio_filtered = filter_signal(out, "power_per_speed", filters_cfg=filters_cfg, log_fn=None)
+    ratio_filtered = filter_signal(out, "cost_of_transport", filters_cfg=filters_cfg, log_fn=None)
     final_vals = out if ratio_filtered is None else ratio_filtered
     return pd.Series(final_vals, index=df.index)
 
