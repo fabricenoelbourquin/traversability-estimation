@@ -31,7 +31,7 @@ visuals:
       overlay_pitch: true          # if true, pipeline adds --overlay-pitch
       shade_clusters: true         # add --shade-clusters
     metric_dual_viewer:
-      enabled: true
+      enabled: false
       add_depth_cam: true
       overlay_pitch: true
       shade_clusters: true

@@ -307,8 +307,9 @@ def main():
 
     metrics_section = metrics_cfg.get("metrics", {}) if metrics_cfg else {}
     whitelist = metrics_section.get("names", []) if metrics_section else []
-    cumulative_list = metrics_section.get("cumulative", []) if metrics_section else []
-    cumulative_set = {c for c in cumulative_list if isinstance(c, str)}
+    # handle empty/null cumulative list gracefully
+    cumulative_list = metrics_section.get("cumulative") if metrics_section else []
+    cumulative_set = {c for c in (cumulative_list or []) if isinstance(c, str)}
 
     metric_cols = _detect_metric_cols(df, args.metrics, whitelist)
     if args.metrics is None and cumulative_set:
