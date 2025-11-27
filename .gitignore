@@ -9,6 +9,9 @@ data/**
 reports/**
 !reports/.gitkeep
 
+# Private configs
+config/metrics.private.yaml
+
 # Optional: logs/caches anywhere
 **/cache/**
 **/logs/**

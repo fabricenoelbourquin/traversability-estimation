@@ -30,6 +30,16 @@ from metrics import compute, REGISTRY
 def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
+def merge_dicts(base: dict, override: dict) -> dict:
+    """Deep merge two dicts without mutating inputs; override wins."""
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_dicts(out[k], v)
+        else:
+            out[k] = v
+    return out
+
 def resolve_synced_file(sync_dir: Path, hz: int | None) -> Path:
     if hz is not None:
         cand = sync_dir / f"synced_{hz}Hz.parquet"
@@ -60,7 +70,9 @@ def main():
     sync_dir = mp.synced
     in_parquet = resolve_synced_file(sync_dir, args.hz)
 
-    cfg = load_yaml(P["REPO_ROOT"] / "config" / "metrics.yaml")  # for max_speed_mps, etc.
+    cfg_path = P["REPO_ROOT"] / "config" / "metrics.yaml"
+    cfg_private_path = P["REPO_ROOT"] / "config" / "metrics.private.yaml"
+    cfg = merge_dicts(load_yaml(cfg_path), load_yaml(cfg_private_path))  # for max_speed_mps, etc.
 
     # Determine metric names from CLI or config (config wins if CLI left as default)
     cfg_metrics = cfg.get("metrics", {})
