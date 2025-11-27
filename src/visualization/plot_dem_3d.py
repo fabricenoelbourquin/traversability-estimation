@@ -78,12 +78,17 @@ def main():
     ap.add_argument("--show", action="store_true", default=False, help="Open interactive window.")
     # Trajectory
     ap.add_argument("--plot-trajectory", action="store_true", default=False)
+    ap.add_argument("--only-relevant", action="store_true", default=False,
+                    help="Crop DEM to a tight patch around the trajectory (requires --plot-trajectory).")
     add_hz_argument(ap)
     ap.add_argument("--traj-skip", type=int, default=1, help="Plot every Nth trajectory sample.")
     ap.add_argument("--traj-offset", type=float, default=0.02, help="Meters to lift path above surface.")
     ap.add_argument("--traj-width", type=float, default=1.2)
     ap.add_argument("--traj-color", type=str, default="crimson")
     args = ap.parse_args()
+
+    if args.only_relevant and not args.plot_trajectory:
+        raise ValueError("--only-relevant requires --plot-trajectory to compute the crop around the path.")
 
     # Backend: interactive only if --show
     if not args.show:
@@ -107,6 +112,33 @@ def main():
     if nodata is not None:
         z = np.where(z == nodata, np.nan, z)
 
+    traj_data = None
+    if args.plot_trajectory or args.only_relevant:
+        synced_path, hz = pick_synced_path(mp.synced, args.hz)
+        df = pd.read_parquet(synced_path).sort_values("t")
+        lat_col, lon_col = find_lat_lon_cols(df)
+        lat = df[lat_col].to_numpy(); lon = df[lon_col].to_numpy()
+
+        transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
+        x_e, y_n = transformer.transform(lon, lat)
+
+        row_f, col_f = world_to_rowcol(transform, x_e, y_n)
+        z_traj = bilinear_sample(z, row_f, col_f)
+
+        valid = np.isfinite(x_e) & np.isfinite(y_n) & np.isfinite(z_traj)
+        valid_idx = np.nonzero(valid)[0]
+        print(f"[traj] total={len(lat)} inside_dem={valid_idx.size}")
+
+        if valid_idx.size > 0:
+            traj_data = {
+                "x": x_e,
+                "y": y_n,
+                "z": z_traj,
+                "valid_idx": valid_idx,
+            }
+        else:
+            print("[traj] no points fall within the DEM extent — nothing to draw.")
+
     # grid
     H, W = z.shape
     j = np.arange(W); i = np.arange(H)
@@ -114,10 +146,32 @@ def main():
     y = transform.f + i * transform.e
     X, Y = np.meshgrid(x, y)
 
+    if args.only_relevant:
+        if traj_data is None or traj_data["valid_idx"].size == 0:
+            raise RuntimeError("--only-relevant requires a trajectory within the DEM extent. Use --plot-trajectory and ensure lat/lon overlap the DEM.")
+        pad = 5.0
+        x_traj = traj_data["x"][traj_data["valid_idx"]]
+        y_traj = traj_data["y"][traj_data["valid_idx"]]
+        x_min, x_max = x_traj.min() - pad, x_traj.max() + pad
+        y_min, y_max = y_traj.min() - pad, y_traj.max() + pad
+
+        col_mask = (x >= x_min) & (x <= x_max)
+        row_mask = (y >= y_min) & (y <= y_max)
+        if not col_mask.any() or not row_mask.any():
+            raise RuntimeError("Crop bounds outside DEM extent; check trajectory/DEM alignment.")
+
+        x = x[col_mask]; y = y[row_mask]
+        X = X[np.ix_(row_mask, col_mask)]
+        Y = Y[np.ix_(row_mask, col_mask)]
+        z = z[np.ix_(row_mask, col_mask)]
+        print(f"[crop] using relevant patch: rows={row_mask.sum()} cols={col_mask.sum()} (pad={pad} m)")
+
     s = max(1, int(args.stride))
     Xs, Ys, Zs = X[::s, ::s], Y[::s, ::s], z[::s, ::s]
 
-    fig = plt.figure(figsize=(10, 8), dpi=args.dpi)
+    fig_w, fig_h = ((8.5, 6.8) if args.show else (10.0, 8.0))
+    fig_dpi = 110 if args.show else args.dpi
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=fig_dpi)
     ax = fig.add_subplot(111, projection="3d")
 
     # hillshade
@@ -173,8 +227,6 @@ def main():
             # endpoints
             ax.scatter3D(x_e[valid_idx[0]], y_n[valid_idx[0]], z_plot[0],  c="lime", s=30, depthshade=False)
             ax.scatter3D(x_e[valid_idx[-1]], y_n[valid_idx[-1]], z_plot[-1], c="red",  s=30, depthshade=False)
-        else:
-            print("[traj] no points fall within the DEM extent — nothing to draw.")
 
     def pick_auto_azim(Xg: np.ndarray, Yg: np.ndarray, Zg: np.ndarray) -> float:
         """Aim camera toward the lowest corner so high terrain doesn't occlude the rest."""
@@ -212,14 +264,14 @@ def main():
 
     print("grid full:", z.shape, "after stride:", Zs.shape, "pixel size (m):", pix_east, pix_north)
 
-    out_dir = Path(P["REPO_ROOT"]) / "reports" / mp.display
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_png = out_dir / f"{mp.display}_dem3d.png"
-    fig.savefig(out_png)
-    print(f"[ok] saved 3D DEM figure to {out_png}")
-
     if args.show:
         plt.show()
+    else:
+        out_dir = Path(P["REPO_ROOT"]) / "reports" / mp.display
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_png = out_dir / f"{mp.display}_dem3d.png"
+        fig.savefig(out_png)
+        print(f"[ok] saved 3D DEM figure to {out_png}")
 
 if __name__ == "__main__":
     main()

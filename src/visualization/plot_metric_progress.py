@@ -140,7 +140,7 @@ def _build_metric_figure(
     pitch_deg: np.ndarray | None,
     title: str,
     cluster_shading: ClusterShading | None,
-) -> plt.Figure:
+) -> tuple[plt.Figure, list[plt.Axes]]:
     """
     Build a stacked metric figure for a particular X-axis (time or distance).
     """
@@ -202,7 +202,43 @@ def _build_metric_figure(
     axes[-1].set_xlabel(x_label)
     fig.suptitle(title, y=0.995, fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
-    return fig
+    return fig, axes
+
+
+def _enable_cursor_readout(fig: plt.Figure, axes: Sequence[plt.Axes], x_label: str) -> None:
+    """
+    Add a vertical cursor line and figure text that follow the mouse to show the X value.
+    """
+    vlines = [ax.axvline(color="0.35", linestyle=":", linewidth=0.8, alpha=0.7, visible=False) for ax in axes]
+    readout = fig.text(
+        0.015,
+        0.01,
+        "",
+        fontsize=9,
+        ha="left",
+        va="bottom",
+        bbox={"facecolor": "white", "edgecolor": "0.8", "alpha": 0.8, "pad": 2.5},
+        visible=False,
+    )
+
+    def _on_move(event):
+        if not event.inaxes or event.xdata is None:
+            if readout.get_visible():
+                readout.set_visible(False)
+                for ln in vlines:
+                    ln.set_visible(False)
+                fig.canvas.draw_idle()
+            return
+
+        x_val = event.xdata
+        readout.set_text(f"{x_label}: {x_val:.2f}")
+        readout.set_visible(True)
+        for ln in vlines:
+            ln.set_xdata(x_val)
+            ln.set_visible(True)
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("motion_notify_event", _on_move)
 
 def main():
     ap = argparse.ArgumentParser(description="Plot metrics over time and/or distance for a mission.")
@@ -244,6 +280,11 @@ def main():
         "--out",
         default=None,
         help="Output path. Use a file path when generating a single plot or a directory when producing multiple plots.",
+    )
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help="Open interactive plot windows (with cursor readout) instead of saving images.",
     )
     args = ap.parse_args()
 
@@ -310,9 +351,13 @@ def main():
         dist = dist - dist[0]
         requests.append(("distance", dist, "distance traveled [m]", "distance"))
 
-    out_arg = Path(args.out).expanduser() if args.out else None
+    interactive = bool(args.show)
+    if interactive and args.out:
+        print("[warn] --show specified, skipping --out and not saving figures.")
+    out_arg = Path(args.out).expanduser() if (args.out and not interactive) else None
     default_dir = P["REPO_ROOT"] / "reports" / display_name
-    default_dir.mkdir(parents=True, exist_ok=True)
+    if not interactive:
+        default_dir.mkdir(parents=True, exist_ok=True)
     multi = len(requests) > 1
 
     def resolve_out_path(suffix: str) -> Path:
@@ -329,8 +374,9 @@ def main():
         return default_dir / f"{display_name}_{suffix}.png"
 
     title = f"{display_name} — {mission_id}"
+    figures_to_show: list[plt.Figure] = []
     for axis_key, x_values, x_label, suffix in requests:
-        fig = _build_metric_figure(
+        fig, axes = _build_metric_figure(
             df,
             x_values,
             x_label,
@@ -342,10 +388,17 @@ def main():
             title=f"{title} ({axis_key})",
             cluster_shading=cluster_shading,
         )
-        out_path = resolve_out_path(suffix)
-        fig.savefig(out_path, dpi=160)
-        plt.close(fig)
-        print(f"[ok] saved {out_path}")
+        if interactive:
+            _enable_cursor_readout(fig, axes, x_label)
+            figures_to_show.append(fig)
+        else:
+            out_path = resolve_out_path(suffix)
+            fig.savefig(out_path, dpi=160)
+            plt.close(fig)
+            print(f"[ok] saved {out_path}")
+
+    if interactive:
+        plt.show()
 
 if __name__ == "__main__":
     main()
