@@ -2,7 +2,7 @@
 """
 Quick visual sweep of filter windows for cost_of_transport.
 
-Adjust METRIC / MEDIAN_WINDOWS / MEAN_WINDOWS below to try other window sizes.
+Adjust METRIC / SPEED_* / COT_* below to try other window sizes.
 Each combination is plotted in a grid so you can visually compare smoothing strength. Uses the
 metric implementation from src/metrics.py so you see the same logic as compute_metrics, with
 custom filter chains injected for cost_of_transport_speed and cost_of_transport.
@@ -31,8 +31,12 @@ import metrics as metrics_mod
 
 # ---- knobs to tweak ----
 METRIC: str = "cost_of_transport"
-MEDIAN_WINDOWS: list[int] = [1, 3, 5, 7, 9]          # applied to cost_of_transport_speed and cost_of_transport
-MEAN_WINDOWS: list[int] = [5, 15, 25, 35, 45]        # applied to cost_of_transport_speed and cost_of_transport
+SPEED_MEDIANS: list[int] = [5]
+SPEED_MEANS: list[int] = [15]
+COT_MEDIANS: list[int] = [5, 7]
+COT_MEANS: list[int] = [15, 25, 35]
+# Fixed Hampel outlier stage (set to None to disable)
+HAMP_STAGE: dict | None = {"type": "hampel", "window": 101, "k": 3.0, "center": True}
 
 
 def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
@@ -55,19 +59,33 @@ def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
     return plains[0]
 
 
-def _cot_filters(base_filters: dict, med_w: int | None, mean_w: int | None, default_power: Iterable[dict]) -> dict:
-    """Return a filters dict overriding cost_of_transport* chains."""
-    overrides = {}
+def _build_chain(med_w: int | None, mean_w: int | None) -> list[dict]:
+    chain: list[dict] = []
     if med_w is None or mean_w is None:
-        overrides["cost_of_transport_speed"] = []
-        overrides["cost_of_transport"] = []
-    else:
-        chain = [
+        return chain
+    if HAMP_STAGE is not None:
+        chain.append(dict(HAMP_STAGE))
+    chain.extend(
+        [
             {"type": "moving_median", "window": med_w},
             {"type": "moving_average", "window": mean_w},
         ]
-        overrides["cost_of_transport_speed"] = chain
-        overrides["cost_of_transport"] = chain
+    )
+    return chain
+
+
+def _cot_filters(
+    base_filters: dict,
+    speed_med: int | None,
+    speed_mean: int | None,
+    cot_med: int | None,
+    cot_mean: int | None,
+    default_power: Iterable[dict],
+) -> dict:
+    """Return a filters dict overriding cost_of_transport* chains (speed and ratio separately)."""
+    overrides = {}
+    overrides["cost_of_transport_speed"] = _build_chain(speed_med, speed_mean)
+    overrides["cost_of_transport"] = _build_chain(cot_med, cot_mean)
     overrides["cost_of_transport_power"] = list(default_power)
     merged = dict(base_filters)
     merged.update(overrides)
@@ -134,31 +152,49 @@ def main() -> None:
         {"type": "moving_average", "window": 1},
     ]
 
-    raw_filters = _cot_filters(base_filters, None, None, default_power)
+    raw_filters = _cot_filters(base_filters, None, None, None, None, default_power)
     y_raw = _compute_cot(df, cfg_base, raw_filters)
 
-    n_rows = len(MEDIAN_WINDOWS)
-    n_cols = len(MEAN_WINDOWS)
-    fig_w = 3.4 * n_cols
-    fig_h = 2.1 * n_rows
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h), sharex=True, sharey=False)
+    speed_pairs = [(m, a) for m in SPEED_MEDIANS for a in SPEED_MEANS]
+    cot_pairs = [(m, a) for m in COT_MEDIANS for a in COT_MEANS]
 
-    for i, med_w in enumerate(MEDIAN_WINDOWS):
-        for j, mean_w in enumerate(MEAN_WINDOWS):
-            ax = axes[i][j] if n_rows > 1 else axes[j]  # type: ignore[index]
-            filters_override = _cot_filters(base_filters, med_w, mean_w, default_power)
+    single_speed = len(speed_pairs) == 1 and len(cot_pairs) > 1
+    if single_speed:
+        n_rows, n_cols = len(cot_pairs), 1
+    else:
+        n_rows, n_cols = len(speed_pairs), len(cot_pairs)
+
+    fig_w = 3.2 * n_cols
+    fig_h = 2.0 * n_rows
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h), sharex=True, sharey=False)
+    # normalize axes to 2D array for consistent indexing
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, n_cols)
+    elif n_cols == 1:
+        axes = axes.reshape(n_rows, 1)
+
+    for i, (med_s, mean_s) in enumerate(speed_pairs):
+        for j, (med_c, mean_c) in enumerate(cot_pairs):
+            if single_speed:
+                ax = axes[j][0]
+            else:
+                ax = axes[i][j]
+            filters_override = _cot_filters(base_filters, med_s, mean_s, med_c, mean_c, default_power)
             y_filt = _compute_cot(df, cfg_base, filters_override)
-            desc = format_chain(filters_override["cost_of_transport"])
+            desc_speed = format_chain(filters_override["cost_of_transport_speed"])
+            desc_cot = format_chain(filters_override["cost_of_transport"])
+            label = f"speed[{desc_speed}] | cot[{desc_cot}]"
             ax.plot(x, y_raw, color="0.75", linewidth=0.9, label="raw", zorder=1)
-            ax.plot(x, y_filt, linewidth=1.1, label=desc, zorder=2)
+            ax.plot(x, y_filt, linewidth=1.1, label=label, zorder=2)
             ax.grid(True, alpha=0.2)
             if i == n_rows - 1:
                 ax.set_xlabel(x_label)
             if j == 0:
                 ax.set_ylabel(METRIC)
-            ax.set_title(f"median={med_w}, mean={mean_w}", fontsize=9)
-            if i == 0 and j == 0:
-                ax.legend(loc="upper right", frameon=False, fontsize=8)
+            ax.set_title(f"speed m{med_s}/a{mean_s} | cot m{med_c}/a{mean_c}", fontsize=9)
+
 
     fig.suptitle(f"{mp.display} — {METRIC}", y=0.995, fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
