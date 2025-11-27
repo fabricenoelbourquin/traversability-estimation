@@ -124,6 +124,9 @@ def main():
                    help="Skip download + extract + sync; recompute metrics and make plots.")
     p.add_argument("--metrics-only", action="store_true",
                    help="Only run compute_metrics.py (skip download/extract/sync and all later stages).")
+    p.add_argument("--extra", nargs="*", default=None,
+                   help="Extra bag kinds to include for download (same as download_bag --extra). "
+                        "When provided, overrides extras from config/pipeline.yaml.")
     # optional fine-grained skips
     p.add_argument("--skip-download", action="store_true")
     p.add_argument("--skip-extract", action="store_true")
@@ -140,7 +143,12 @@ def main():
     with cfg_path.open("r") as f:
         cfg = yaml.safe_load(f) or {}
     bags_cfg = (cfg.get("bags") or {})
-    bag_extras = _parse_bag_extras(bags_cfg)
+    bag_extras_cfg = _parse_bag_extras(bags_cfg)
+    if args.extra is not None:
+        # CLI extras override config extras; pass an empty list to request no extras.
+        bag_extras = sorted({x for x in args.extra if x})
+    else:
+        bag_extras = bag_extras_cfg
     def _build_download_cmd() -> list[str]:
         cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
         if mission_name:
