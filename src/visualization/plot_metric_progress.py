@@ -181,9 +181,8 @@ def _build_metric_figure(
 
     ax_i = 0
     if add_speed_panel:
+        # Keep speed panel single-axis even when pitch overlay is requested.
         add_cluster_background(axes[ax_i], x_values, cluster_shading)
-        if pitch_deg is not None:
-            _overlay_pitch(axes[ax_i], x_values, pitch_deg)
         if "v_cmd" in df.columns:
             v_cmd = df["v_cmd"]
         elif {"v_cmd_x", "v_cmd_y"}.issubset(df.columns):
@@ -239,7 +238,7 @@ def main():
     ap.add_argument(
         "--overlay-pitch",
         action="store_true",
-        help="Overlay pitch [deg] on each subplot using a secondary Y-axis.",
+        help="Overlay pitch [deg] on metric subplots using a secondary Y-axis (not applied to speed panel).",
     )
     ap.add_argument(
         "--shade-clusters",

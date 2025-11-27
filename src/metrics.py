@@ -51,6 +51,34 @@ def _joint_power_terms(df: pd.DataFrame) -> pd.DataFrame | None:
     data = {j: df[f"tau_{j}"] * df[f"qd_{j}"] for j in joints}
     return pd.DataFrame(data, index=df.index)
 
+def _get_motor_constants(cfg: dict) -> tuple[float, float, float] | None:
+    """
+    Extract (R, k_t, G) from config. Returns None if any are missing or invalid.
+    Accepted keys inside cfg:
+      - actuation / actuator / motor: containing keys R or resistance_ohm,
+        k_t or torque_constant, and G or gear_ratio.
+    """
+    actuation = cfg.get("actuation") or cfg.get("actuator") or cfg.get("motor") or {}
+
+    def _read(keys):
+        for k in keys:
+            if k in actuation:
+                try:
+                    return float(actuation[k])
+                except (TypeError, ValueError):
+                    return np.nan
+        return np.nan
+
+    R = _read(["R", "resistance_ohm", "resistance"])
+    k_t = _read(["k_t", "kt", "K_t", "torque_constant"])
+    G = _read(["G", "gear_ratio"])
+
+    if not (np.isfinite(R) and np.isfinite(k_t) and np.isfinite(G)):
+        return None
+    if R <= 0.0 or k_t == 0.0 or G <= 0.0:
+        return None
+    return R, k_t, G
+
 
 # Metrics
 #   Each metric:
@@ -139,13 +167,53 @@ def power_mech_signed(df: pd.DataFrame, cfg: dict) -> pd.Series:
         return _nan_series(df)
     return terms.sum(axis=1)
 
+@metric("power_joule_heating")
+def power_joule_heating(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """
+    Joule heating losses [W]: sum_j (R * tau_j^2 / k_t^2 * G^2).
+    Requires torque columns and motor constants in cfg.
+    """
+    _, tau_cols = _find_joint_columns(df)
+    if not tau_cols:
+        return _nan_series(df)
+    constants = _get_motor_constants(cfg)
+    if constants is None:
+        return _nan_series(df)
+    R, k_t, G = constants
+    factor = R / ((k_t ** 2) * (G ** 2))
+    torques_sq = (df[tau_cols] ** 2).sum(axis=1)
+    return factor * torques_sq
+
+@metric("power")
+def power(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """
+    Total power [W]: mechanical power + Joule heating losses.
+    """
+    mech = REGISTRY["power_mech"](df, cfg)
+    heat = REGISTRY["power_joule_heating"](df, cfg)
+    if mech.isna().all() and heat.isna().all():
+        return pd.Series(np.nan, index=df.index)
+    combined = mech.add(heat, fill_value=0.0)
+    combined[(~mech.notna()) & (~heat.notna())] = np.nan
+    return combined
+
 @metric("cost_of_transport")
 def cost_of_transport(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
     Instantaneous Cost of Transport (dimensionless):
-      COT = power_mech / (m * g * |v_actual|).
+      COT = total power / (m * g * |v_actual|).
     Samples with |v_actual| below a configurable threshold are clamped to 0.
     """
+    return _cost_of_transport_from_power(df, cfg, REGISTRY["power"](df, cfg))
+
+@metric("cost_of_transport_mech")
+def cost_of_transport_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """
+    Cost of Transport using only mechanical power (legacy behavior).
+    """
+    return _cost_of_transport_from_power(df, cfg, REGISTRY["power_mech"](df, cfg))
+
+def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series) -> pd.Series:
     d = _ensure_speed_columns(df)
     if "v_actual" not in d.columns:
         return pd.Series(np.nan, index=df.index)
@@ -156,7 +224,6 @@ def cost_of_transport(df: pd.DataFrame, cfg: dict) -> pd.Series:
     if not np.isfinite(m) or m <= 0.0 or not np.isfinite(g) or g <= 0.0:
         return pd.Series(np.nan, index=df.index)
 
-    power = REGISTRY["power_mech"](df, cfg)
     if power.isna().all():
         return pd.Series(np.nan, index=df.index)
 
