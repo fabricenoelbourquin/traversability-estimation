@@ -63,12 +63,37 @@ def _ema(values: np.ndarray, stage: FilterStage) -> np.ndarray:
     return series.ewm(alpha=alpha, adjust=adjust, min_periods=min_periods).mean().to_numpy()
 
 
+def _hampel(values: np.ndarray, stage: FilterStage) -> np.ndarray:
+    """
+    Hampel filter: rolling median with MAD-based outlier replacement.
+    Points with |x - median| > k * MAD are replaced by the median.
+    """
+    window = max(1, int(stage.get("window", 11)))
+    if window <= 1:
+        return values.copy()
+    k = float(stage.get("k", 3.0))
+    center = bool(stage.get("center", True))
+    min_periods = int(stage.get("min_periods", 1))
+
+    series = pd.Series(values)
+    rolled = series.rolling(window=window, center=center, min_periods=min_periods)
+    med = rolled.median()
+    mad = (series - med).abs().rolling(window=window, center=center, min_periods=min_periods).median()
+    mad = mad.replace(0.0, np.nan)  # avoid zero division; NaNs will fail the mask
+    thresh = k * 1.4826 * mad
+    mask = (series - med).abs() > thresh
+    out = series.copy()
+    out[mask] = med[mask]
+    return out.to_numpy()
+
+
 FILTER_FUNCS: dict[str, Any] = {
     # Dictionary mapping filter type names to their corresponding functions
     "moving_average": _moving_average,
     "moving_median": _moving_median,
     "ema": _ema,
     "exponential": _ema,
+    "hampel": _hampel,
     "none": lambda values, stage: values.copy(),
 }
 
