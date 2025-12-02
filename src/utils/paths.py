@@ -15,7 +15,8 @@ def get_paths():
         "maps": "maps",
         "cache": "cache",
         "logs": "logs",
-        "models": "models",  # NEW
+        "models": "models",
+        "datasets": "datasets",
     }
 
     if paths_yaml.exists():
@@ -34,7 +35,8 @@ def get_paths():
         "MAPS": root / subdirs["maps"],
         "CACHE": root / subdirs["cache"],
         "LOGS": root / subdirs["logs"],
-        "MODELS": root / subdirs["models"],  # ← comma was missing before
+        "MODELS": root / subdirs["models"],
+        "DATASETS": root / subdirs["datasets"],
         "REPO_ROOT": repo_root,
         "MISSIONS_JSON": repo_root / "config" / "missions.json",
     }

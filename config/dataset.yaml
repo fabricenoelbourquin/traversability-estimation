@@ -1,0 +1,44 @@
+# Default configuration for patch-level HDF5 dataset creation.
+patch:
+  size_m: 5.0                 # square patch size (meters)
+  overlap_ratio: 0.5          # 0..0.5; stride = size * (1 - overlap_ratio) when stride_m is null
+  stride_m: null              # optional explicit stride; overrides overlap_ratio when set
+  min_height_valid_frac: 0.6  # require this fraction of finite DEM gradients in a patch
+  min_robot_samples: 5        # require at least this many robot samples inside the patch
+
+inputs:
+  hz: null                    # pick synced_<Hz>Hz*.parquet (default: latest)
+  dem_path: null              # optional override; auto-discovered from maps/ when null
+  prefer_dem_from_meta: true  # try reading <mission>/maps/.../*.json sidecar first
+
+metrics:
+  names: []                   # empty -> use metrics.names from config/metrics.yaml
+  include_speed: true         # aggregate actual speed (mean/min/max)
+  include_command_speed: true # aggregate commanded speed (mean/min/max)
+
+output:
+  path: null                  # default: <DATA_ROOT>/datasets
+  filename: "patches_{patch_size_m}m.h5"  # supports {patch_size_m} token
+  compression: "gzip"
+  overwrite_mission: true     # replace existing group for a mission
+
+swissimage:
+  include_dino_embeddings: false  # placeholder; embeddings skipped when false
+
+selection:
+  time_ranges_s:
+    ETH-1:
+      - [75, 220]
+    GRI-1:
+      - [70, 180]
+      - [182, 210]
+      - [227, 250]
+    LEE-1:
+      - [10, 30]
+      - [445, 455]
+    LEICA-1:
+      - [65, 95]
+      - [110, 155]
+    # Using mission UUID to avoid encoding issues for KÄB-3
+    8c3d3ce2-df6a-4ec4-98f5-1a9e08ef276e:
+      - [355, 425]

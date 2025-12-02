@@ -1,9 +1,14 @@
 bags:
   enabled: true
-  camera: true
-  depth: true
+  camera: false
+  depth: false
+
+dataset:
+  enabled: true
+  config: "config/dataset.yaml"
 
 visuals:
+  enabled: false
   timeseries:
     enabled: true
     with_speeds: false
