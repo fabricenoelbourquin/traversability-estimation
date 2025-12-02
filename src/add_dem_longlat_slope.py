@@ -129,13 +129,20 @@ def load_dem_config(config_path: Path) -> dict:
 def create_weight_kernel(method: str, size: int, sigma: float) -> np.ndarray:
     """Creates an (size, size) weight kernel for WLS."""
     if method == "uniform":
-        return np.ones((size, size))
+        return np.ones((size, size), dtype=np.float64)
     
     elif method == "gaussian":
+        if sigma <= 0.0 or not np.isfinite(sigma):
+            raise ValueError(f"weighting_sigma_pixels must be > 0 (got {sigma})")
         ax = np.arange(-size // 2 + 1., size // 2 + 1.)
         xx, yy = np.meshgrid(ax, ax)
         kernel = np.exp(-(xx**2 + yy**2) / (2. * sigma**2))
-        return kernel / np.max(kernel)  # Normalize to max=1
+        denom = np.nanmax(kernel)
+        if not np.isfinite(denom) or denom <= 0.0:
+            raise ValueError("Gaussian kernel normalization failed (denom <= 0).")
+        kernel = kernel / denom
+        kernel = np.where(np.isfinite(kernel), kernel, 0.0)
+        return kernel
     
     else:
         raise ValueError(f"Unknown weighting_method: {method}")
@@ -179,7 +186,9 @@ def sample_gradients_planefit(z_grid: np.ndarray,
         size,
         float(config.get("weighting_sigma_pixels", 1.25))
     )
-    weights = kernel.ravel()
+    weights = kernel.ravel().astype(np.float64)
+    if not np.isfinite(weights).all():
+        raise ValueError("Weight kernel contains non-finite values.")
 
     # Pixel scales (meters/pixel)
     a_res, e_res = transform.a, transform.e  # e_res < 0 for north-up
@@ -194,9 +203,10 @@ def sample_gradients_planefit(z_grid: np.ndarray,
     # A = [dx, dy, 1]
     A = np.stack([dx_meters, dy_meters, np.ones(size * size, dtype=np.float64)], axis=1)
 
-    # Weighted system precompute
-    Wmat = np.diag(weights)                # (K,K)
-    A_w = Wmat @ A                         # (K,3)
+    # Weighted system precompute (avoid constructing a full diagonal matrix)
+    if not np.isfinite(A).all():
+        raise ValueError("Design matrix A has non-finite entries.")
+    A_w = weights[:, None] * A             # (K,3)
     A_w_pinv = np.linalg.pinv(A_w)         # (3,K)
 
     # Integer centers
@@ -251,7 +261,8 @@ def main():
     mp = resolve_mission(args.mission or args.mission_id, P)
     sync_dir, map_dir = mp.synced, mp.maps
 
-    config_path = SRC_ROOT / "metrics.yaml"
+    # Use repo config/metrics.yaml (not alongside this script)
+    config_path = Path(P["REPO_ROOT"]) / "config" / "metrics.yaml"
     dem_config = load_dem_config(config_path)
 
     synced_path = pick_synced_path(sync_dir, args.hz)

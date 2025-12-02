@@ -8,7 +8,7 @@ dataset:
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false
+  enabled: false # bool to enable/disable all visuals
   timeseries:
     enabled: true
     with_speeds: false

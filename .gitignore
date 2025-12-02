@@ -11,6 +11,7 @@ reports/**
 
 # Private configs
 config/metrics.private.yaml
+config/asphalt_missions.json
 
 # Optional: logs/caches anywhere
 **/cache/**
