@@ -13,11 +13,6 @@ import sys
 from pathlib import Path
 import yaml
 
-from pathlib import Path as _P
-_THIS = _P(__file__).resolve()
-_SRC_ROOT = _THIS.parents[1]
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 

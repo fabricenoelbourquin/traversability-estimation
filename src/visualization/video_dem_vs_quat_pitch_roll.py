@@ -41,14 +41,9 @@ from pyproj import Transformer
 from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 
-# make src/ importable
-THIS = Path(__file__).resolve()
-SRC_ROOT = THIS.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
@@ -187,8 +182,8 @@ def compute_dem_gradients(dem_path: Path):
 
 def main():
     ap = argparse.ArgumentParser(description="Video with camera on left, DEM-vs-Quat pitch/roll plots on right.")
-    ap.add_argument("--mission", required=True)
-    ap.add_argument("--hz", type=int, default=None)
+    add_mission_arguments(ap)
+    add_hz_argument(ap)
     ap.add_argument("--camera-pattern", default="*_hdr_front.bag")
     ap.add_argument("--camera-topic",   default="/boxi/hdr/front/image_raw/compressed")
     ap.add_argument("--fps", type=float, default=30.0)
@@ -199,7 +194,7 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     raw_dir, sync_dir, display_name, map_dir = mp.raw, mp.synced, mp.display, mp.maps
 
     synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=True)

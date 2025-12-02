@@ -36,6 +36,7 @@ import yaml
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, resolve_mission_from_args
 
 # Resolve common repo paths once at import time. Expects keys:
 # RAW / TABLES / SYNCED / REPO_ROOT / MISSIONS_JSON
@@ -210,7 +211,7 @@ def main():
       9) Write synced parquet + meta.json (+ optional QC plot).
     """
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID (from missions.json)")
+    add_mission_arguments(ap)
     ap.add_argument("--hz", type=float, help="Resample Hz (overrides config)")
     ap.add_argument("--tolerance-ms", type=float, help="As-of match tolerance in ms")
     ap.add_argument("--direction", choices=["nearest","backward"], help="As-of direction")
@@ -229,7 +230,7 @@ def main():
     smooth_win_s = float(sync_cfg.get("smooth", {}).get("speed_window_s", 0.0))
 
     # Resolve mission -> tables dir, output dir, canonical mission_id
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     tables_dir, out_dir, mission_id, display_name = mp.tables, mp.synced, mp.mission_id, mp.display
     out_dir.mkdir(parents=True, exist_ok=True)
 

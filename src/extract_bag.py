@@ -25,6 +25,7 @@ import yaml
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, resolve_mission_from_args
 from utils.ros_time import header_stamp_ns, message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 
@@ -519,9 +520,7 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
 
 def main():
     ap = argparse.ArgumentParser(description="Extract key topics from mission rosbags to Parquet.")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--mission", help="Mission alias (from config/missions.json)")
-    g.add_argument("--mission-id", help="Mission UUID (from config/missions.json)")
+    add_mission_arguments(ap)
     ap.add_argument("--topics-cfg", default=str(repo_root() / "config" / "topics.yaml"),
                     help="Optional topics override YAML (explicit topic names).")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing Parquet files.")
@@ -530,7 +529,7 @@ def main():
     P = get_paths()
     rr = P["REPO_ROOT"]
     missions = load_missions_json(rr)
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     mission_id, mission_folder, raw_dir, out_dir = mp.mission_id, mp.folder, mp.raw, mp.tables
     out_dir.mkdir(parents=True, exist_ok=True)
 

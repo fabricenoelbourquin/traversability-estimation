@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import cv2
@@ -26,14 +25,9 @@ import matplotlib.pyplot as plt
 from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 
-# make src/ importable
-THIS = Path(__file__).resolve()
-SRC_ROOT = THIS.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.ros_time import message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
@@ -229,8 +223,8 @@ def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.nd
 
 def main():
     ap = argparse.ArgumentParser(description="Render video + metric vertically (camera top, plot bottom) with optional yaw/pitch/roll plots on the right.")
-    ap.add_argument("--mission", required=True)
-    ap.add_argument("--hz", type=int, default=None)
+    add_mission_arguments(ap)
+    add_hz_argument(ap)
     ap.add_argument("--metric", default="power_mech")
     ap.add_argument("--camera-pattern", default="*_hdr_front.bag")
     ap.add_argument("--camera-topic", default="/boxi/hdr/front/image_raw/compressed")
@@ -278,7 +272,7 @@ def main():
     metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
     filters_cfg = metrics_cfg.get("filters", {})
 
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     raw_dir, synced_dir, display_name = mp.raw, mp.synced, mp.display
     out_base = Path(P["REPO_ROOT"]) / "reports" / display_name
     out_base.mkdir(parents=True, exist_ok=True)

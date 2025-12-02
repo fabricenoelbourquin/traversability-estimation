@@ -14,17 +14,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 from typing import Iterable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
 from utils.paths import get_paths
 from utils.missions import MissionPaths, resolve_mission

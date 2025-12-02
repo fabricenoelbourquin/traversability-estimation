@@ -18,17 +18,13 @@ import argparse, math
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]    # .../src
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet
 
 # ---------------- helpers ----------------
@@ -113,9 +109,8 @@ def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str,str]:
 
 def main():
     ap = argparse.ArgumentParser(description="Compare heading (from q_WB) vs path yaw (from GPS) using synced parquet.")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--mission"); g.add_argument("--mission-id")
-    ap.add_argument("--hz", type=int, default=None, help="Which synced_<Hz>Hz.parquet to use (default: latest).")
+    add_mission_arguments(ap)
+    add_hz_argument(ap, help_text="Which synced_<Hz>Hz.parquet to use (default: latest).")
     ap.add_argument("--min-speed", type=float, default=0.2, help="Ignore samples slower than this [m/s].")
     ap.add_argument("--yaw-med-win", type=int, default=11, help="Rolling median window for GPS yaw.")
     ap.add_argument("--yaw-mean-win", type=int, default=11, help="Rolling mean window for GPS yaw.")
@@ -133,7 +128,7 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    mp = resolve_mission(args.mission or args.mission_id, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir, short, display_name, map_dir = mp.synced, mp.folder, mp.display, mp.maps
     out_dir_default = P["REPO_ROOT"] / "reports" / display_name
     out_dir_default.mkdir(parents=True, exist_ok=True)

@@ -19,19 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-# -- repo imports -------------------------------------------------------------
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission, MissionPaths

@@ -26,7 +26,7 @@ import yaml
 from pyproj import Transformer
 
 from utils.paths import get_paths
-from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
@@ -442,11 +442,9 @@ def save_hdf(group_name: str,
 
 def main():
     ap = argparse.ArgumentParser(description="Build patch-level HDF5 dataset for one mission.")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--mission", help="Mission alias (config/missions.json)")
-    g.add_argument("--mission-id", help="Mission UUID (config/missions.json)")
+    add_mission_arguments(ap)
     ap.add_argument("--config", default="config/dataset.yaml", help="Dataset config YAML")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz*.parquet (default: config or latest)")
+    add_hz_argument(ap, help_text="Pick synced_<Hz>Hz*.parquet (default: config or latest)")
     ap.add_argument("--patch-size-m", type=float, default=None, help="Override patch size (meters)")
     ap.add_argument("--overlap", type=float, default=None, help="Override overlap ratio (0..0.5)")
     ap.add_argument("--stride-m", type=float, default=None, help="Override stride (meters)")
@@ -476,7 +474,7 @@ def main():
     include_dino = bool(swiss_cfg.get("include_dino_embeddings", False))
 
     P = get_paths()
-    mp = resolve_mission(args.mission or args.mission_id, P)
+    mp = resolve_mission_from_args(args, P)
 
     synced_path = resolve_synced_parquet(mp.synced, args.hz or input_cfg.get("hz"), prefer_metrics=True)
     hz_used = args.hz or input_cfg.get("hz") or infer_hz_from_path(synced_path)

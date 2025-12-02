@@ -4,20 +4,20 @@ bags:
   depth: false
 
 dataset:
-  enabled: true
+  enabled: false
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false # bool to enable/disable all visuals
+  enabled: true # bool to enable/disable all visuals
   timeseries:
     enabled: true
-    with_speeds: false
-    overlay_pitch: true
-    plot_time: true
-    plot_distance: true
+    with_speeds: false    # include commanded and actual speed plots
+    overlay_pitch: true   # overlay pitch angle on metrics
+    plot_time: true       # activate time plot
+    plot_distance: true   # activate distance plot
 
   map:
-    enabled: true
+    enabled: false
     background: both      # swissimg | cluster | both
     emb_both: false
 
