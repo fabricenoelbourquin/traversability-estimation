@@ -32,15 +32,8 @@ import rasterio
 from rasterio.transform import rowcol
 from pyproj import Transformer
 
-# --- paths helper ---
-import sys
-from pathlib import Path
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]    # .../src
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
-from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
 
@@ -131,8 +124,8 @@ def pick_vmin_vmax(vals: np.ndarray, clip_percentile: float, min_zero: bool) -> 
 # ----------------- main -----------------
 def main():
     ap = argparse.ArgumentParser(description="Plot a synced metric over SwissImage / cluster PNG(s).")
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz_metrics.parquet (default: latest)")
+    add_mission_arguments(ap)
+    add_hz_argument(ap, help_text="Pick synced_<Hz>Hz_metrics.parquet (default: latest)")
     ap.add_argument("--metric", default="speed_error_abs", help="Metric column in the synced parquet")
     ap.add_argument("--background", choices=["raw", "cluster", "both"], default="raw")
     ap.add_argument("--kmeans", type=int, default=50)
@@ -150,7 +143,7 @@ def main():
     # Paths & meta
     metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
     filters_cfg = metrics_cfg.get("filters", {})
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir, short, display_name, map_dir = mp.synced, mp.folder, mp.display, mp.maps
     synced = pick_synced(sync_dir, args.hz)
     tif_path, png_raw = latest_swissimg_paths(map_dir)

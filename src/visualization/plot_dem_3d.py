@@ -8,7 +8,7 @@ Usage:
 """
 
 from __future__ import annotations
-import argparse, sys
+import argparse
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -19,14 +19,9 @@ from pyproj import Transformer
 import pandas as pd
 import matplotlib  # backend decided after parsing
 
-# make src/ importable
-THIS = Path(__file__).resolve()
-SRC_ROOT = THIS.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
@@ -71,8 +66,7 @@ def bilinear_sample(grid: np.ndarray, row_f: np.ndarray, col_f: np.ndarray) -> n
 
 def main():
     ap = argparse.ArgumentParser(description="3D DEM with optional trajectory overlay.")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--mission"); g.add_argument("--mission-id")
+    add_mission_arguments(ap)
     ap.add_argument("--dem", type=str, default=None,
                     help="Override DEM; default: <mission>/maps/swisstopo/alti3d_chip512_gsd050.tif")
     ap.add_argument("--stride", type=int, default=1, help="Downsample factor for plotting (>=1).")
@@ -84,7 +78,7 @@ def main():
     ap.add_argument("--show", action="store_true", default=False, help="Open interactive window.")
     # Trajectory
     ap.add_argument("--plot-trajectory", action="store_true", default=False)
-    ap.add_argument("--hz", type=int, default=None)
+    add_hz_argument(ap)
     ap.add_argument("--traj-skip", type=int, default=1, help="Plot every Nth trajectory sample.")
     ap.add_argument("--traj-offset", type=float, default=0.02, help="Meters to lift path above surface.")
     ap.add_argument("--traj-width", type=float, default=1.2)
@@ -98,7 +92,7 @@ def main():
     from matplotlib.colors import LightSource
 
     P = get_paths()
-    mp = resolve_mission(args.mission or args.mission_id, P)
+    mp = resolve_mission_from_args(args, P)
     dem_path = Path(args.dem) if args.dem else (mp.maps / "swisstopo" / "alti3d_chip512_gsd050.tif")
     if not dem_path.exists():
         raise FileNotFoundError(f"DEM not found: {dem_path}")

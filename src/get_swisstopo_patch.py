@@ -42,6 +42,7 @@ from affine import Affine
 # ---- paths helper (your existing one) ----
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet
 
 P = get_paths()
@@ -348,8 +349,8 @@ def fetch_swissalti3d_dem(
 # ----------------- main -----------------
 def main():
     ap = argparse.ArgumentParser(description="Fetch fixed-chip SwissImage patch for a mission using synced GPS.")
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    add_mission_arguments(ap)
+    add_hz_argument(ap)
     ap.add_argument("--config", default=None, help="Path to config/imagery.yaml (default: repo config)")
     # optional overrides
     ap.add_argument("--chip-px", type=int, help="Override chip_px")
@@ -378,7 +379,7 @@ def main():
     prefix = out_cfg.get("prefix", "")
 
     # Resolve mission + synced parquet
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir, mission_id, short = mp.synced, mp.mission_id, mp.folder
     synced_path = resolve_synced_parquet(sync_dir, args.hz)
     df = pd.read_parquet(synced_path)

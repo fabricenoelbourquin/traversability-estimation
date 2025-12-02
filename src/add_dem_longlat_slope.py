@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import sys
 import warnings
 from pathlib import Path
 from typing import Tuple
@@ -42,14 +41,9 @@ import yaml  # --- NEW ---
 from rasterio.transform import Affine
 from pyproj import Transformer
 
-# add repo src/ to path
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet
 
 
@@ -236,10 +230,8 @@ def sample_gradients_planefit(z_grid: np.ndarray,
 
 def main():
     ap = argparse.ArgumentParser(description="Add DEM-based longitudinal & lateral slopes to metrics parquet.")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--mission")
-    g.add_argument("--mission-id")
-    ap.add_argument("--hz", type=int, default=None, help="Which synced_<Hz>Hz.parquet to use (default: latest).")
+    add_mission_arguments(ap)
+    add_hz_argument(ap, help_text="Which synced_<Hz>Hz.parquet to use (default: latest).")
     ap.add_argument("--dem", type=str, default=None, help="Path to DEM GeoTIFF (default: <mission>/maps/swisstopo/alti3d_chip512_gsd050.tif)")
     ap.add_argument("--min-speed", type=float, default=0.0, help="Optional future filter; unused here.")
     ap.add_argument("--write-to", choices=["metrics", "synced"], default="synced",
@@ -247,7 +239,7 @@ def main():
     args = ap.parse_args()
 
     P = get_paths()
-    mp = resolve_mission(args.mission or args.mission_id, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir, map_dir = mp.synced, mp.maps
 
     # Use repo config/metrics.yaml (not alongside this script)

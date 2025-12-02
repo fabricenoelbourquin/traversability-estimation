@@ -21,15 +21,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Allow running directly
-import sys
-THIS = Path(__file__).resolve()
-SRC_ROOT = THIS.parents[1]  # .../src
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, resolve_mission_from_args
 
 def parse_specs(specs: List[str]) -> Dict[str, List[str]]:
     """
@@ -49,13 +43,13 @@ def parse_specs(specs: List[str]) -> Dict[str, List[str]]:
 
 def main():
     ap = argparse.ArgumentParser(description="Plot raw (unsynced) tables for debugging.")
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
+    add_mission_arguments(ap)
     ap.add_argument("--plot", required=True, action="append",
                     help="Spec 'table:col1,col2'. Repeat for multiple tables.")
     args = ap.parse_args()
 
     P = get_paths()
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     tables_dir, mission_id, display_name = mp.tables, mp.mission_id, mp.display
     specs = parse_specs(args.plot)
 

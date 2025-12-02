@@ -21,14 +21,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# --- path helper ---
-import sys
-THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1]    # .../src
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
-from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
 from visualization.cluster_shading import (
@@ -212,8 +206,8 @@ def _build_metric_figure(
 
 def main():
     ap = argparse.ArgumentParser(description="Plot metrics over time and/or distance for a mission.")
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    add_mission_arguments(ap)
+    add_hz_argument(ap, help_text="Pick synced_<Hz>Hz.parquet (default: latest)")
     ap.add_argument("--metrics", nargs="*", default=None, help="Subset of metric columns to plot")
     ap.add_argument("--with-speeds", action="store_true", help="Add a top panel with v_cmd vs v_actual")
     ap.add_argument(
@@ -256,7 +250,7 @@ def main():
     P = get_paths()
     metrics_cfg = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
     filters_cfg = metrics_cfg.get("filters", {})
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir, mission_id, display_name = mp.synced, mp.mission_id, mp.display
 
     synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=True)
