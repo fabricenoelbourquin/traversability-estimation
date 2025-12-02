@@ -35,29 +35,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission, MissionPaths
+from utils.synced import resolve_synced_parquet
 from visualization.cluster_shading import sample_cluster_labels_for_dataframe
-
-
-def _pick_synced_metrics_file(synced_dir: Path, hz: int | None) -> Path:
-    """
-    Prefer synced_*Hz_metrics.parquet (filtered) over synced_*Hz.parquet.
-    """
-    if hz is not None:
-        metrics = synced_dir / f"synced_{hz}Hz_metrics.parquet"
-        if metrics.exists():
-            return metrics
-        fallback = synced_dir / f"synced_{hz}Hz.parquet"
-        if fallback.exists():
-            return fallback
-        raise FileNotFoundError(f"Neither synced_{hz}Hz_metrics.parquet nor synced_{hz}Hz.parquet found in {synced_dir}")
-
-    candidates = sorted(synced_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if candidates:
-        return candidates[0]
-    fallback = sorted(synced_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if fallback:
-        return fallback[0]
-    raise FileNotFoundError(f"No synced parquet files in {synced_dir}")
 
 
 def _load_requested_missions(args: argparse.Namespace, base_paths: dict) -> list[MissionPaths]:
@@ -112,7 +91,7 @@ def _collect_cluster_samples(
     for mp in missions:
         synced_dir = Path(mp.synced)
         try:
-            parquet_path = _pick_synced_metrics_file(synced_dir, args.hz)
+            parquet_path = resolve_synced_parquet(synced_dir, args.hz, prefer_metrics=True)
         except FileNotFoundError as exc:
             print(f"[warn] {mp.display}: {exc}")
             continue

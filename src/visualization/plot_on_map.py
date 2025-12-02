@@ -42,27 +42,15 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.filtering import filter_signal, load_metrics_config
+from utils.synced import resolve_synced_parquet
 
 P = get_paths()
 
 # ----------------- helpers -----------------
 
 def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
-    """
-    Prefer metrics files:
-        synced_{Hz}Hz_metrics.parquet  (if Hz given)
-        newest synced_*Hz_metrics.parquet (if Hz not given)
-    """
-    if hz is not None:
-        p = sync_dir / f"synced_{hz}Hz_metrics.parquet"
-        if p.exists():
-            return p
-        raise FileNotFoundError(f"{p} not found")
-    metrics = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"),
-                     key=lambda p: p.stat().st_mtime, reverse=True)
-    if metrics:
-        return metrics[0]
-    raise FileNotFoundError(f"No synced *_metrics parquet found in {sync_dir}")
+    """Prefer synced_*_metrics.parquet; fallback handled by resolve_synced_parquet."""
+    return resolve_synced_parquet(sync_dir, hz, prefer_metrics=True, metrics_only=True)
 
 def latest_swissimg_paths(map_dir: Path) -> Tuple[Path, Path]:
     """Return (tif_path, png_path) for the newest swissimg chip."""

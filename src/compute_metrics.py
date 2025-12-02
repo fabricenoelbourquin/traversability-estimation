@@ -18,12 +18,13 @@ python src/compute_metrics.py --mission ETH-1 \
 from __future__ import annotations
 import argparse, json
 from pathlib import Path
-import re
 import yaml, pandas as pd
 
 # paths helper
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 from metrics import compute, REGISTRY
 
@@ -40,35 +41,19 @@ def merge_dicts(base: dict, override: dict) -> dict:
             out[k] = v
     return out
 
-def resolve_synced_file(sync_dir: Path, hz: int | None) -> Path:
-    if hz is not None:
-        cand = sync_dir / f"synced_{hz}Hz.parquet"
-        if not cand.exists():
-            raise FileNotFoundError(f"{cand} not found.")
-        return cand
-    # pick the only synced_*.parquet or the latest by mtime
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
-    return cands[0]
-
-def infer_hz_from_path(p: Path) -> int | None:
-    m = re.search(r"synced_(\d+)Hz\.parquet$", p.name)
-    return int(m.group(1)) if m else None
-
 def main():
     ap = argparse.ArgumentParser(description="Compute metrics on a synced parquet.")
-    ap.add_argument("--mission", required=True, help="Mission alias or UUID")
-    ap.add_argument("--hz", type=int, default=None, help="Pick synced_<Hz>Hz.parquet (default: latest)")
+    add_mission_arguments(ap)
+    add_hz_argument(ap, help_text="Pick synced_<Hz>Hz.parquet (default: latest)")
     ap.add_argument("--metrics", nargs="*", default=["speed_error_abs", "speed_tracking_score"],
                     help=f"Metric names to compute. Available: {list(REGISTRY)}")
     ap.add_argument("--out", default=None, help="Optional output path (default: overwrite input parquet)")
     args = ap.parse_args()
 
     P = get_paths()
-    mp = resolve_mission(args.mission, P)
+    mp = resolve_mission_from_args(args, P)
     sync_dir = mp.synced
-    in_parquet = resolve_synced_file(sync_dir, args.hz)
+    in_parquet = resolve_synced_parquet(sync_dir, args.hz)
 
     cfg_path = P["REPO_ROOT"] / "config" / "metrics.yaml"
     cfg_private_path = P["REPO_ROOT"] / "config" / "metrics.private.yaml"

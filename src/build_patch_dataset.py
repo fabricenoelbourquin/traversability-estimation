@@ -27,6 +27,7 @@ from pyproj import Transformer
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
 # -------------------------- helpers --------------------------
@@ -50,15 +51,6 @@ def load_dem_params(metrics_path: Path) -> dict:
     return params
 
 
-def infer_hz_from_path(p: Path) -> int | None:
-    # Try to infer Hz from synced_<Hz>Hz*.parquet filename
-    name = p.stem
-    for part in name.split("_"):
-        if part.endswith("Hz") and part[:-2].isdigit():
-            return int(part[:-2])
-    return None
-
-
 def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str, str]:
     cand_lat = [c for c in df.columns if "lat" in c.lower()]
     cand_lon = [c for c in df.columns if "lon" in c.lower()]
@@ -78,37 +70,6 @@ def resolve_metric_names(cfg_metrics: dict, repo_root: Path) -> list[str]:
         return [str(n) for n in names]
     metrics_cfg = load_yaml(repo_root / "config" / "metrics.yaml")
     return list(metrics_cfg.get("metrics", {}).get("names", []))
-
-
-def resolve_synced_path(sync_dir: Path, hz: int | None) -> Path:
-    def pick(h: int) -> Path | None:
-        p_metrics = sync_dir / f"synced_{h}Hz_metrics.parquet"
-        p_base = sync_dir / f"synced_{h}Hz.parquet"
-        if p_metrics.exists():
-            return p_metrics
-        if p_base.exists():
-            return p_base
-        return None
-
-    if hz is not None:
-        cand = pick(int(hz))
-        if cand:
-            return cand
-        raise FileNotFoundError(f"synced parquet (Hz={hz}) not found in {sync_dir}")
-
-    cands = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    bases = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    seen = set()
-    ordered: list[Path] = []
-    for p in cands + bases:
-        key = p.name.replace("_metrics", "")
-        if key in seen:
-            continue
-        seen.add(key)
-        ordered.append(p)
-    if not ordered:
-        raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
-    return ordered[0]
 
 
 def discover_dem_path(map_dir: Path, prefer_meta: bool, explicit: str | None = None) -> Path:
@@ -517,7 +478,7 @@ def main():
     P = get_paths()
     mp = resolve_mission(args.mission or args.mission_id, P)
 
-    synced_path = resolve_synced_path(mp.synced, args.hz or input_cfg.get("hz"))
+    synced_path = resolve_synced_parquet(mp.synced, args.hz or input_cfg.get("hz"), prefer_metrics=True)
     hz_used = args.hz or input_cfg.get("hz") or infer_hz_from_path(synced_path)
     print(f"[load] synced: {synced_path}")
     df = pd.read_parquet(synced_path).sort_values("t").reset_index(drop=True)

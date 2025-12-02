@@ -54,3 +54,49 @@ def resolve_mission(mission: str, P: Mapping[str, str | Path]) -> MissionPaths:
 
     return MissionPaths(tables=tables, synced=synced, raw=raw,
                         mission_id=mission_id, folder=folder, display=display, maps = maps)
+
+
+def missions_json_path(paths: Mapping[str, str | Path]) -> Path:
+    """Return missions.json path from the paths mapping (defaults to config/missions.json)."""
+    repo_root = Path(paths["REPO_ROOT"])
+    return Path(paths.get("MISSIONS_JSON", repo_root / "config" / "missions.json"))
+
+
+def load_missions_file(missions_json: Path) -> dict[str, dict]:
+    """Load missions.json safely; return {} if missing or unparsable."""
+    if not missions_json.exists():
+        return {}
+    try:
+        return json.loads(missions_json.read_text())
+    except Exception:
+        return {}
+
+
+def write_missions_file(missions_json: Path, data: Mapping) -> None:
+    """Atomic write of missions.json + cache clear for resolve_mission()."""
+    missions_json.parent.mkdir(parents=True, exist_ok=True)
+    tmp = missions_json.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(missions_json)
+    _load_missions.cache_clear()
+
+
+def upsert_mission_entry(
+    missions_json: Path,
+    mission_id: str,
+    folder: str,
+    mission_name: str | None,
+) -> None:
+    """Update missions.json with folder + alias, preserving existing entries."""
+    cur = load_missions_file(missions_json)
+
+    entry = cur.get(mission_id, {})
+    entry.update({"folder": folder, "name": mission_name})
+    cur[mission_id] = entry
+
+    if mission_name:
+        aliases = cur.get("_aliases", {})
+        aliases[mission_name] = mission_id
+        cur["_aliases"] = aliases
+
+    write_missions_file(missions_json, cur)
