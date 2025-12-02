@@ -120,6 +120,7 @@ def main():
     p.add_argument("--mission-id", type=str, required=False, help="Mission UUID (REQUIRED).")
     p.add_argument("--mission-name", type=str, default=None, help="Optional alias (e.g., ETH-1).")
     p.add_argument("--config", type=str, default="config/pipeline.yaml", help="YAML config path")
+    p.add_argument("--dataset-config", type=str, default=None, help="Dataset config path (override pipeline.yaml)")
     p.add_argument("--already-downloaded", action="store_true",
                    help="Skip download + extract + sync; recompute metrics and make plots.")
     p.add_argument("--metrics-only", action="store_true",
@@ -135,8 +136,10 @@ def main():
     p.add_argument("--skip-cluster", action="store_true")
     p.add_argument("--skip-visuals", action="store_true")
     p.add_argument("--skip-dem-slope", action="store_true")
+    p.add_argument("--skip-dataset", action="store_true")
     args = p.parse_args()
 
+    # CFGs
     cfg_path = Path(args.config)
     if not cfg_path.exists():
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
@@ -144,6 +147,11 @@ def main():
         cfg = yaml.safe_load(f) or {}
     bags_cfg = (cfg.get("bags") or {})
     bag_extras_cfg = _parse_bag_extras(bags_cfg)
+    dataset_cfg = (cfg.get("dataset") or {})
+    dataset_config_path = Path(args.dataset_config or dataset_cfg.get("config") or "config/dataset.yaml")
+    dataset_enabled = yes(dataset_cfg.get("enabled", False))
+    vis = cfg.get("visuals", {})
+    vis_enabled = yes(vis.get("enabled", True))
     if args.extra is not None:
         # CLI extras override config extras; pass an empty list to request no extras.
         bag_extras = sorted({x for x in args.extra if x})
@@ -185,8 +193,9 @@ def main():
     skip_sync     = args.skip_sync or metrics_only
     skip_swissimg = args.skip_swissimg or metrics_only
     skip_cluster  = args.skip_cluster or metrics_only
-    skip_visuals  = args.skip_visuals or metrics_only
+    skip_visuals  = args.skip_visuals or metrics_only or not vis_enabled
     skip_dem_slope = args.skip_dem_slope or metrics_only
+    skip_dataset  = args.skip_dataset or metrics_only or not dataset_enabled
     py = sys.executable
 
     # 1) Download (this script accepts id + name together)
@@ -294,9 +303,22 @@ def main():
     else:
         print(">> Skipping DEM/longlat/slope.")    
 
+    # 8) Dataset export (patch-level HDF5)
+    if not skip_dataset:
+        cmd = [py, "src/build_patch_dataset.py", *ident_either(), "--config", str(dataset_config_path)]
+        sh(cmd)
+    else:
+        reasons = []
+        if args.skip_dataset:
+            reasons.append("--skip-dataset")
+        if metrics_only:
+            reasons.append("metrics-only")
+        if not dataset_enabled:
+            reasons.append("disabled in config")
+        print(">> Skipping dataset export (" + ", ".join(reasons or ["not requested"]) + ").")
+
     # 8-11) Visualizations
     if not skip_visuals:
-        vis = cfg.get("visuals", {})
 
         ts_cfg = (vis.get("timeseries") or {})
         if yes(ts_cfg.get("enabled", True)):
