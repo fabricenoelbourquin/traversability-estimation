@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -152,12 +154,18 @@ def world_to_rowcol(transform: rasterio.Affine, x: np.ndarray, y: np.ndarray) ->
 
 def create_weight_kernel(method: str, size: int, sigma: float) -> np.ndarray:
     if method == "uniform":
-        return np.ones((size, size))
+        return np.ones((size, size), dtype=np.float64)
     if method == "gaussian":
+        if sigma <= 0.0 or not np.isfinite(sigma):
+            raise ValueError(f"weighting_sigma_pixels must be > 0 (got {sigma})")
         ax = np.arange(-size // 2 + 1., size // 2 + 1.)
         xx, yy = np.meshgrid(ax, ax)
         kernel = np.exp(-(xx ** 2 + yy ** 2) / (2.0 * sigma ** 2))
-        return kernel / np.max(kernel)
+        denom = np.nanmax(kernel)
+        if not np.isfinite(denom) or denom <= 0.0:
+            raise ValueError("Gaussian kernel normalization failed (denom <= 0).")
+        kernel = kernel / denom
+        return kernel.astype(np.float64)
     raise ValueError(f"Unknown weighting_method: {method}")
 
 
@@ -169,7 +177,16 @@ def sample_gradients_planefit(z_grid: np.ndarray,
     """
     Calculate DEM gradients (p=∂z/∂E, q=∂z/∂N) at arbitrary fractional row/col
     positions by fitting a plane to a local patch.
-    Mirrors the logic in add_dem_longlat_slope.py.
+    Mirrors the logic in add_dem_longlat_slope.py
+    Arguments:
+        z_grid: (H,W) DEM grid
+        transform: rasterio Affine transform for the DEM, maps pixel coords ↔ world coords.
+        row_f: (N,) fractional row positions
+        col_f: (N,) fractional column positions
+        config: dict with plane-fitting parameters
+    Returns:
+        p_s: (N,) eastward slopes
+        q_s: (N,) northward slopes
     """
     H, W_img = z_grid.shape
     N = len(row_f)
@@ -184,17 +201,22 @@ def sample_gradients_planefit(z_grid: np.ndarray,
         size,
         float(config.get("weighting_sigma_pixels", 1.25))
     )
-    weights = kernel.ravel()
+    weights = kernel.ravel().astype(np.float64)
+    if not np.isfinite(weights).all():
+        raise ValueError("Weight kernel contains non-finite values.")
 
+    # transform.a ~ pixel width in meters (east), transform.e ~ pixel height in meters (north, negative)
     a_res, e_res = transform.a, transform.e
     patch_rows_rel = np.arange(-half_size, half_size + 1)
     patch_cols_rel = np.arange(-half_size, half_size + 1)
     xx_rel_pix, yy_rel_pix = np.meshgrid(patch_cols_rel, patch_rows_rel)
     dx_meters = xx_rel_pix.ravel() * a_res
     dy_meters = yy_rel_pix.ravel() * e_res
+    # Design matrix for plane fitting: z = p*dx + q*dy + c
     A = np.stack([dx_meters, dy_meters, np.ones(size * size, dtype=np.float64)], axis=1)
-    Wmat = np.diag(weights)
-    A_w = Wmat @ A
+    if not np.isfinite(A).all():
+        raise ValueError("Design matrix A has non-finite entries.")
+    A_w = weights[:, None] * A
     A_w_pinv = np.linalg.pinv(A_w)
 
     row_i = np.round(row_f).astype(np.int64).ravel()
@@ -290,12 +312,12 @@ def get_time_ranges(selection_cfg: dict, mission_keys: list[str]) -> list[tuple[
     return []
 
 
-def make_segments(df: pd.DataFrame, ranges: list[tuple[float, float]]) -> list[pd.DataFrame]:
+def make_segments(df: pd.DataFrame, ranges: list[tuple[float, float]], use_col: str = "t_rel") -> list[pd.DataFrame]:
     if not ranges:
         return [df]
     segs = []
     for start, end in ranges:
-        seg = df[(df["t"] >= start) & (df["t"] <= end)].copy()
+        seg = df[(df[use_col] >= start) & (df[use_col] <= end)].copy()
         if len(seg):
             segs.append(seg)
     return segs
@@ -421,18 +443,38 @@ def save_hdf(group_name: str,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     data = df.to_records(index=False)
 
-    with h5py.File(out_path, "a") as f:
-        grp = f.require_group(group_name)
-        if "patches" in grp:
-            if not overwrite:
-                raise SystemExit(f"Group '{group_name}' already has patches; use overwrite_mission=true to replace.")
-            del grp["patches"]
-        ds = grp.create_dataset("patches", data=data, compression=compression)
-        for k, v in attrs.items():
-            grp.attrs[k] = v
-        grp.attrs["num_patches"] = len(df)
-        grp.attrs["column_order"] = json.dumps(list(df.columns))
-        ds.attrs["column_order"] = json.dumps(list(df.columns))
+    # simple lock to avoid concurrent writes to the same HDF5 file
+    lock_path = out_path.with_suffix(out_path.suffix + ".lock")
+    lock_fd = None
+    for _ in range(60):  # wait up to ~60s
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            time.sleep(1.0)
+    if lock_fd is None:
+        raise SystemExit(f"Could not acquire lock for {out_path} (lock file exists: {lock_path})")
+
+    try:
+        with h5py.File(out_path, "a") as f:
+            grp = f.require_group(group_name)
+            if "patches" in grp:
+                if not overwrite:
+                    raise SystemExit(f"Group '{group_name}' already has patches; use overwrite_mission=true to replace.")
+                del grp["patches"]
+            ds = grp.create_dataset("patches", data=data, compression=compression)
+            for k, v in attrs.items():
+                grp.attrs[k] = v
+            grp.attrs["num_patches"] = len(df)
+            grp.attrs["column_order"] = json.dumps(list(df.columns))
+            ds.attrs["column_order"] = json.dumps(list(df.columns))
+    finally:
+        try:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # -------------------------- main --------------------------
@@ -499,7 +541,18 @@ def main():
 
     res_m = float(abs(transform.a))
 
-    # lat/lon -> E/N
+    # Optional time ranges per mission (interpreted as seconds since start of mission)
+    mission_keys = [args.mission, args.mission_id, mp.display, mp.mission_id]
+    time_ranges = get_time_ranges(selection_cfg, [str(k) for k in mission_keys if k])
+    t0 = float(df["t"].min()) if len(df) else float("nan")
+    df["t_rel_raw"] = df["t"] - t0
+    base_segments = make_segments(df, time_ranges, use_col="t_rel_raw") if time_ranges else [df]
+    if time_ranges and not base_segments:
+        raise SystemExit("No data after applying time ranges.")
+    df = pd.concat(base_segments, axis=0).sort_values("t").reset_index(drop=True)
+    df["t_rel_raw"] = df["t"] - float(df["t"].min()) + (time_ranges[0][0] if time_ranges else 0.0)
+
+    # lat/lon -> E/N (after time filtering)
     lat_col, lon_col = find_lat_lon_cols(df)
     lat = df[lat_col].to_numpy(dtype=float)
     lon = df[lon_col].to_numpy(dtype=float)
@@ -507,14 +560,15 @@ def main():
     east, north = transformer.transform(lon, lat)
     df["easting_m"] = east
     df["northing_m"] = north
-
-    # Optional time ranges per mission
-    mission_keys = [args.mission, args.mission_id, mp.display, mp.mission_id]
-    time_ranges = get_time_ranges(selection_cfg, [str(k) for k in mission_keys if k])
-    segments = make_segments(df, time_ranges)
-    if not segments:
-        raise SystemExit("No data after applying time ranges.")
-    df = pd.concat(segments, axis=0).sort_values("t").reset_index(drop=True)
+    # Build segments (stride restarts per range) using the filtered df with coordinates
+    if time_ranges:
+        segments = []
+        for start, end in time_ranges:
+            seg = df[(df["t_rel_raw"] >= start) & (df["t_rel_raw"] <= end)].copy()
+            if len(seg):
+                segments.append(seg)
+    else:
+        segments = [df]
 
     half_px = max(1, int(round((patch_size_m / 2.0) / res_m)))
     pf_half = dem_params["patch_size_pixels"] // 2
@@ -525,9 +579,6 @@ def main():
     skipped_height = 0
     skipped_robot = 0
     patch_idx = 0
-
-    # Rebuild segments (post-filter) to restart stride per range
-    segments = make_segments(df, time_ranges) if time_ranges else [df]
 
     for seg in segments:
         if seg.empty:
