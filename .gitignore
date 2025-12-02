@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+**/*.egg-info/
 
 # Project data & outputs (kept out of git)
 data/**
