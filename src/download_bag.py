@@ -25,6 +25,7 @@ from argparse import BooleanOptionalAction
 
 # --- paths helper ---
 from utils.paths import get_paths
+from utils.missions import missions_json_path, load_missions_file, upsert_mission_entry
 
 # Try to import YAML (PyYAML). If unavailable we'll use hardcoded fallbacks.
 try:
@@ -42,9 +43,6 @@ EXIT_NO_GPS = 20
 def repo_root() -> Path:
     # If helper didn’t provide it, infer from this file
     return P.get("REPO_ROOT", Path(__file__).resolve().parents[1])
-
-def missions_json_path() -> Path:
-    return P.get("MISSIONS_JSON", repo_root() / "config" / "missions.json")
 
 # --- rosbags.yaml loader ---
 def rosbags_yaml_path() -> Path:
@@ -88,14 +86,8 @@ def _read_rosbags_yaml() -> dict:
 
 def _read_missions_json() -> dict[str, dict]:
     """Load missions.json safely; return {} on any parse/missing error."""
-    mj = missions_json_path()
-    if not mj.exists():
-        return {}
-    try:
-        return json.loads(mj.read_text())
-    except Exception:
-        print(f"[warn] Could not parse {mj}; treating as empty.", file=sys.stderr)
-        return {}
+    mj = missions_json_path(P)
+    return load_missions_file(mj)
 
 def short_folder_from_uuid(mission_id: str, dest_root: Path) -> tuple[str, Path]:
     """
@@ -163,41 +155,6 @@ def make_patterns_for_defaults(extras: list[str]) -> list[str]:
 
 def ensure_dirs(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.replace(path)
-
-def update_missions_json(
-    mission_id: str,
-    folder: str,
-    mission_name: str | None,
-) -> None:
-    mj = missions_json_path()
-    mj.parent.mkdir(parents=True, exist_ok=True)
-
-    cur: dict[str, dict] = {}
-    if mj.exists():
-        try:
-            cur = json.loads(mj.read_text())
-        except Exception:
-            print(f"[warn] Could not parse {mj}; rewriting clean.", file=sys.stderr)
-            cur = {}
-
-    entry = cur.get(mission_id, {})
-    entry.update({"folder": folder, "name": mission_name})
-
-    cur[mission_id] = entry
-
-    # Alias map (so you can later use --mission-name Heap_1)
-    if mission_name:
-        aliases = cur.get("_aliases", {})
-        aliases[mission_name] = mission_id
-        cur["_aliases"] = aliases
-
-    atomic_write_json(mj, cur)
-    print(f"[info] Updated {mj}")
 
 def download_selected(mission_id: str, dest: Path, selected_patterns: list[str], dry: bool) -> None:
     if not selected_patterns:
@@ -313,7 +270,9 @@ def main():
             download_selected(args.mission_id, dest_dir, pats, dry=False)
 
     # Record mission metadata only when proceeding (i.e., not skipped)
-    update_missions_json(args.mission_id, folder_name, args.mission_name)
+    mj_path = missions_json_path(P)
+    upsert_mission_entry(mj_path, args.mission_id, folder_name, args.mission_name)
+    print(f"[info] Updated {mj_path}")
     print("[done] Ready at:", dest_dir)
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.filtering import filter_signal, load_metrics_config
+from utils.synced import resolve_synced_parquet
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -110,26 +111,6 @@ def _overlay_pitch(ax, xx: np.ndarray, pitch_deg: np.ndarray):
 def _add_zero_line(ax) -> None:
     """Draw a faint horizontal line at zero for quick visual reference."""
     ax.axhline(0.0, **ZERO_LINE_STYLE)
-
-def _pick_synced(sync_dir: Path, hz: int | None) -> Path:
-    # If Hz specified, try metrics file first
-    if hz is not None:
-        p_metrics = sync_dir / f"synced_{hz}Hz_metrics.parquet"
-        if p_metrics.exists():
-            return p_metrics
-        p_plain = sync_dir / f"synced_{hz}Hz.parquet"
-        if p_plain.exists():
-            return p_plain
-        raise FileNotFoundError(f"Neither {p_metrics} nor {p_plain} found")
-
-    metrics = sorted(sync_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if metrics:
-        return metrics[0]
-
-    plains = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not plains:
-        raise FileNotFoundError(f"No synced parquets in {sync_dir}")
-    return plains[0]
 
 def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None, whitelist: Iterable[str]) -> List[str]:
     if include:
@@ -278,7 +259,7 @@ def main():
     mp = resolve_mission(args.mission, P)
     sync_dir, mission_id, display_name = mp.synced, mp.mission_id, mp.display
 
-    synced_path = _pick_synced(sync_dir, args.hz)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=True)
     df = pd.read_parquet(synced_path)
     if "t" not in df.columns:
         raise KeyError(f"'t' column missing in {synced_path}")

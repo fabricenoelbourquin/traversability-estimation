@@ -37,6 +37,7 @@ from utils.missions import resolve_mission
 from utils.ros_time import message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
+from utils.synced import resolve_synced_parquet
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -47,22 +48,8 @@ METRIC_LINE_ZORDER = 3.0
 PITCH_LINE_ZORDER = 2.2
 
 def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
-    if hz is not None:
-        p = synced_dir / f"synced_{hz}Hz_metrics.parquet"
-        if p.exists():
-            return p
-        p = synced_dir / f"synced_{hz}Hz.parquet"
-        if p.exists():
-            return p
-        raise FileNotFoundError(f"Neither synced_{hz}Hz_metrics.parquet nor synced_{hz}Hz.parquet in {synced_dir}")
-
-    cands = sorted(synced_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if cands:
-        return cands[0]
-    cands = sorted(synced_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No synced parquet in {synced_dir}")
-    return cands[0]
+    """Return metrics parquet, preferring *_metrics.parquet and falling back to plain."""
+    return resolve_synced_parquet(synced_dir, hz, prefer_metrics=True)
 
 def find_camera_bag(raw_dir: Path, pattern: str, topic: str) -> Path:
     matches = sorted(raw_dir.glob(pattern))
@@ -298,7 +285,7 @@ def main():
     out_path = Path(args.out) if args.out else (out_base / f"{display_name}_metric_visual_camera.mp4")
 
     # 1) metrics (+ quaternions if available)
-    metrics_path = pick_synced_metrics(synced_dir, args.hz)
+    metrics_path = resolve_synced_parquet(synced_dir, args.hz, prefer_metrics=True)
     df = pd.read_parquet(metrics_path)
     if args.metric not in df.columns:
         raise KeyError(f"Metric {args.metric!r} not in {metrics_path}. Available: {list(df.columns)}")

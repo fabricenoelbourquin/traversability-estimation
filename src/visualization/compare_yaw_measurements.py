@@ -29,6 +29,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet
 
 # ---------------- helpers ----------------
 
@@ -108,18 +109,6 @@ def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str,str]:
         raise SystemExit(f"Couldn’t find lat/lon columns. Found: lat={cand_lat}, lon={cand_lon}")
     return cand_lat[0], cand_lon[0]
 
-def pick_synced_path(sync_dir: Path, hz: int | None) -> Path:
-    if hz is not None:
-        p = sync_dir / f"synced_{int(hz)}Hz.parquet"
-        if not p.exists():
-            raise SystemExit(f"Synced parquet not found: {p}")
-        return p
-    # choose latest by mtime
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise SystemExit(f"No synced_*Hz.parquet in {sync_dir}")
-    return cands[0]
-
 # -------------- main --------------
 
 def main():
@@ -149,7 +138,7 @@ def main():
     out_dir_default = P["REPO_ROOT"] / "reports" / display_name
     out_dir_default.mkdir(parents=True, exist_ok=True)
 
-    synced_path = pick_synced_path(sync_dir, args.hz)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz)
     out_prefix = args.out_prefix or str(out_dir_default / f"{display_name}_compare_yaw")
 
     df = pd.read_parquet(synced_path).sort_values("t").reset_index(drop=True)

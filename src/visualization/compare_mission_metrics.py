@@ -31,6 +31,7 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.filtering import filter_signal, load_metrics_config
+from utils.synced import resolve_synced_parquet
 
 
 @dataclass
@@ -45,37 +46,6 @@ class MissionSegment:
         start_str = f"{self.start_distance_m:g} m"
         metric = self.metric_name
         return f"{self.mission_display} ({metric}, start {start_str})"
-
-
-def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
-    """Pick the synced parquet file, preferring *_metrics variants when available."""
-    if hz is not None:
-        metrics_path = synced_dir / f"synced_{hz}Hz_metrics.parquet"
-        if metrics_path.exists():
-            return metrics_path
-        plain_path = synced_dir / f"synced_{hz}Hz.parquet"
-        if plain_path.exists():
-            return plain_path
-        raise FileNotFoundError(
-            f"Neither {metrics_path.name} nor {plain_path.name} present in {synced_dir}"
-        )
-
-    metrics_candidates = sorted(
-        synced_dir.glob("synced_*Hz_metrics.parquet"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if metrics_candidates:
-        return metrics_candidates[0]
-
-    plain_candidates = sorted(
-        synced_dir.glob("synced_*Hz.parquet"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not plain_candidates:
-        raise FileNotFoundError(f"No synced parquet files found in {synced_dir}")
-    return plain_candidates[0]
 
 
 def extract_metric_segment(
@@ -139,7 +109,7 @@ def load_segment_for_mission(
 ) -> MissionSegment:
     paths = get_paths()
     mission = resolve_mission(mission_name, paths)
-    parquet = pick_synced_metrics(mission.synced, hz)
+    parquet = resolve_synced_parquet(mission.synced, hz, prefer_metrics=True)
     df = pd.read_parquet(parquet)
 
     distances, values = extract_metric_segment(

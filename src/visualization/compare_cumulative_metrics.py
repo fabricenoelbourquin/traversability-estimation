@@ -29,6 +29,7 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 from utils.missions import MissionPaths, resolve_mission
 from utils.filtering import load_metrics_config
+from utils.synced import resolve_synced_parquet
 
 
 @dataclass
@@ -45,28 +46,6 @@ class MissionSeries:
     window_applied: tuple[float, float]
     time_range_full: tuple[float, float]
     source_path: Path
-
-
-def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
-    """Pick the synced parquet that already includes metrics if available."""
-    if hz is not None:
-        preferred = synced_dir / f"synced_{hz}Hz_metrics.parquet"
-        if preferred.exists():
-            return preferred
-        fallback = synced_dir / f"synced_{hz}Hz.parquet"
-        if fallback.exists():
-            return fallback
-        raise FileNotFoundError(
-            f"Neither synced_{hz}Hz_metrics.parquet nor synced_{hz}Hz.parquet found in {synced_dir}"
-        )
-
-    metrics = sorted(synced_dir.glob("synced_*Hz_metrics.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if metrics:
-        return metrics[0]
-    plains = sorted(synced_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not plains:
-        raise FileNotFoundError(f"No synced parquet found in {synced_dir}")
-    return plains[0]
 
 
 def parse_time_windows(specs: Sequence[str]) -> dict[str, tuple[float | None, float | None]]:
@@ -139,7 +118,7 @@ def load_mission_series(
     hz: int | None,
 ) -> tuple[MissionSeries, list[str]]:
     """Load the selected mission parquet and slice the requested window."""
-    synced_path = pick_synced_metrics(mp.synced, hz)
+    synced_path = resolve_synced_parquet(mp.synced, hz, prefer_metrics=True)
     df = pd.read_parquet(synced_path)
     if "t" not in df.columns:
         raise KeyError(f"'t' column missing in {synced_path}")

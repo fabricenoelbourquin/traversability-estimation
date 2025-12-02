@@ -42,23 +42,13 @@ from affine import Affine
 # ---- paths helper (your existing one) ----
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet
 
 P = get_paths()
 
 # ----------------- helpers -----------------
 def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
-
-def pick_synced_parquet(sync_dir: Path, hz: int | None) -> Path:
-    if hz is not None:
-        p = sync_dir / f"synced_{hz}Hz.parquet"
-        if not p.exists():
-            raise FileNotFoundError(f"{p} not found")
-        return p
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No synced_*.parquet in {sync_dir}")
-    return cands[0]
 
 def get_ll_points_from_synced(df: pd.DataFrame) -> list[tuple[float, float]]:
     """Return list of (lon, lat) from synced parquet, dropping NaNs."""
@@ -390,7 +380,7 @@ def main():
     # Resolve mission + synced parquet
     mp = resolve_mission(args.mission, P)
     sync_dir, mission_id, short = mp.synced, mp.mission_id, mp.folder
-    synced_path = pick_synced_parquet(sync_dir, args.hz)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz)
     df = pd.read_parquet(synced_path)
     pts_ll = get_ll_points_from_synced(df)
 

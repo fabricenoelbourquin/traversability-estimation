@@ -50,6 +50,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet
 
 
 # ---------------- helpers ----------------
@@ -60,18 +61,6 @@ def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
     if not cand_lat or not cand_lon:
         raise SystemExit(f"Couldn’t find lat/lon columns. Found: lat={cand_lat}, lon={cand_lon}")
     return cand_lat[0], cand_lon[0]
-
-def pick_synced_path(sync_dir: Path, hz: int | None) -> Path:
-    if hz is not None:
-        p = sync_dir / f"synced_{int(hz)}Hz.parquet"
-        if not p.exists():
-            raise SystemExit(f"Synced parquet not found: {p}")
-        return p
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"),
-                   key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise SystemExit(f"No synced_*Hz.parquet in {sync_dir}")
-    return cands[0]
 
 def normalize_quat_arrays(qw, qx, qy, qz):
     n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
@@ -265,7 +254,7 @@ def main():
     config_path = Path(P["REPO_ROOT"]) / "config" / "metrics.yaml"
     dem_config = load_dem_config(config_path)
 
-    synced_path = pick_synced_path(sync_dir, args.hz)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz)
     if args.hz is None:
         # Try to infer Hz for naming metrics file
         try:

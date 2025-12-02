@@ -49,6 +49,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
 # ------------------ helpers ------------------
@@ -92,22 +93,6 @@ def guess_time_col(df: pd.DataFrame) -> str:
         if c in df.columns:
             return c
     raise KeyError("No time column found in parquet.")
-
-def pick_synced(sync_dir: Path, hz: Optional[int]) -> Tuple[Path, int]:
-    if hz is not None:
-        p = sync_dir / f"synced_{hz}Hz.parquet"
-        if not p.exists():
-            raise FileNotFoundError(p)
-        return p, int(hz)
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No synced_*Hz.parquet in {sync_dir}")
-    p = cands[0]
-    try:
-        hz = int(p.stem.split("_")[1].replace("Hz", ""))
-    except Exception:
-        hz = 10
-    return p, int(hz)
 
 def normalize_quat_arrays(qw, qx, qy, qz):
     n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
@@ -217,7 +202,8 @@ def main():
     mp = resolve_mission(args.mission, P)
     raw_dir, sync_dir, display_name, map_dir = mp.raw, mp.synced, mp.display, mp.maps
 
-    synced_path, hz = pick_synced(sync_dir, args.hz)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=True)
+    hz = args.hz if args.hz is not None else (infer_hz_from_path(synced_path) or 10)
     df = pd.read_parquet(synced_path).sort_values("t").reset_index(drop=True)
     time_col = guess_time_col(df)
 

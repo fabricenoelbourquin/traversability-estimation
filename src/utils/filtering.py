@@ -16,7 +16,6 @@ FilterStage = Mapping[str, Any]
 @dataclass
 class FilterResult:
     """Container describing the filtered values plus the spec that was applied."""
-
     values: np.ndarray | None
     chain: list[FilterStage]
 

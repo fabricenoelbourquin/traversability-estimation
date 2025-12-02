@@ -27,25 +27,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
+from utils.synced import resolve_synced_parquet, infer_hz_from_path
 
 
 # ---------- helpers ----------
-def pick_synced_path(sync_dir: Path, hz: Optional[int]) -> Tuple[Path, int]:
-    if hz is not None:
-        p = sync_dir / f"synced_{int(hz)}Hz.parquet"
-        if not p.exists():
-            raise FileNotFoundError(p)
-        return p, int(hz)
-    cands = sorted(sync_dir.glob("synced_*Hz.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not cands:
-        raise FileNotFoundError(f"No synced_*Hz.parquet in {sync_dir}")
-    p = cands[0]
-    try:
-        inferred_hz = int(p.stem.split("_")[1].replace("Hz", ""))
-    except Exception:
-        inferred_hz = 10
-    return p, inferred_hz
-
 def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
     lat_cols = [c for c in df.columns if "lat" in c.lower()]
     lon_cols = [c for c in df.columns if "lon" in c.lower()]
@@ -168,7 +153,8 @@ def main():
 
     # trajectory overlay
     if args.plot_trajectory:
-        synced_path, hz = pick_synced_path(mp.synced, args.hz)
+        synced_path = resolve_synced_parquet(mp.synced, args.hz)
+        hz = args.hz if args.hz is not None else (infer_hz_from_path(synced_path) or 10)
         df = pd.read_parquet(synced_path).sort_values("t")
         lat_col, lon_col = find_lat_lon_cols(df)
         lat = df[lat_col].to_numpy(); lon = df[lon_col].to_numpy()
