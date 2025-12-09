@@ -29,6 +29,7 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.filtering import load_metrics_config
+from utils.filtering import load_metrics_config
 
 
 # -------------------------- helpers --------------------------
@@ -558,6 +559,8 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
                           include_speed: bool,
                           include_cmd_speed: bool,
                           cot_cfg: dict[str, float] | None) -> dict:
+                          include_cmd_speed: bool,
+                          cot_cfg: dict[str, float] | None) -> dict:
     out: dict[str, float] = {}
 
     for m in metric_names:
@@ -867,6 +870,11 @@ def main():
                 skipped_robot += 1
                 continue
 
+            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
+            min_dist_m = float(patch_size_m)  # require travel at least the patch size
+            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
+                skipped_robot += 1
+                continue
             robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
             min_dist_m = float(patch_size_m)  # require travel at least the patch size
             if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:

@@ -253,6 +253,8 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     params = cfg.get("params") or {}
     min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-4)
     min_speed_cmd = float(params.get("min_cmd_speed_for_power_norm", min_speed_actual))
+    min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-4)
+    min_speed_cmd = float(params.get("min_cmd_speed_for_power_norm", min_speed_actual))
     min_speed_cmd = max(min_speed_cmd, 0.0)
     min_cmd_pad_s = float(params.get("min_cmd_speed_pad_s", 0.0))
 
