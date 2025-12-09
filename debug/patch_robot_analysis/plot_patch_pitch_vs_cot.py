@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot patch mean slope magnitude (deg) vs patch mean cost_of_transport from the
+Plot patch mean robot pitch (deg) vs patch mean cost_of_transport from the
 HDF5 dataset produced by build_patch_dataset.py.
 """
 
@@ -17,7 +17,17 @@ import pandas as pd
 # Make src/ importable when running from repo root
 import sys
 THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1] / "src"
+
+
+def _resolve_repo_root(file_path: Path) -> Path:
+    for parent in file_path.parents:
+        if (parent / "src").exists():
+            return parent
+    raise SystemExit("Could not find repository root (missing 'src' directory).")
+
+
+REPO_ROOT = _resolve_repo_root(THIS_FILE)
+SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -25,9 +35,9 @@ from utils.paths import get_paths
 
 
 DEFAULT_PATCH_SIZE_M: float = 5.0
-DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data"
 
-SLOPE_COL = "slope_mag_mean"
+PITCH_COL = "pitch_deg_mean"
 COT_COL = "metric_cost_of_transport_mean"
 
 
@@ -95,17 +105,13 @@ def _finite(arr: np.ndarray) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
-def _slope_to_deg(values: np.ndarray) -> np.ndarray:
-    return np.rad2deg(np.arctan(values.astype(np.float64)))
-
-
 def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    if SLOPE_COL not in df.columns or COT_COL not in df.columns:
-        raise SystemExit(f"Required columns missing: need '{SLOPE_COL}' and '{COT_COL}'.")
-    slope = _slope_to_deg(df[SLOPE_COL].to_numpy(dtype=np.float64))
+    if PITCH_COL not in df.columns or COT_COL not in df.columns:
+        raise SystemExit(f"Required columns missing: need '{PITCH_COL}' and '{COT_COL}'.")
+    pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
     cot = df[COT_COL].to_numpy(dtype=np.float64)
-    mask = np.isfinite(slope) & np.isfinite(cot)
-    return slope[mask], cot[mask]
+    mask = np.isfinite(pitch) & np.isfinite(cot)
+    return pitch[mask], cot[mask]
 
 
 def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
@@ -125,7 +131,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot mean slope magnitude (deg) vs mean cost_of_transport for patches.")
+    ap = argparse.ArgumentParser(description="Plot mean robot pitch (deg) vs mean cost_of_transport for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -148,7 +154,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_incline_patch_analysis/patch_slope_vs_cot.png).",
+        help="Output path for figure (default: reports/zz_incline_patch_analysis/patch_pitch_vs_cot.png).",
     )
     ap.add_argument(
         "--gridsize",
@@ -171,27 +177,27 @@ def main() -> None:
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
 
-    slope_all: list[np.ndarray] = []
+    pitch_all: list[np.ndarray] = []
     cot_all: list[np.ndarray] = []
     for df in dfs:
-        s, c = _prepare(df)
-        slope_all.append(s)
+        p, c = _prepare(df)
+        pitch_all.append(p)
         cot_all.append(c)
 
-    slope_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
+    pitch_deg = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
     cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
-    if slope_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite slope/cost_of_transport data to plot.")
+    if pitch_deg.size == 0 or cot_vals.size == 0:
+        raise SystemExit("No finite pitch/cost_of_transport data to plot.")
 
-    fit_all = _fit_line(slope_deg, cot_vals)
-    slope_nr, cot_nr = _remove_outliers(slope_deg, cot_vals)
-    fit_no_outliers = _fit_line(slope_nr, cot_nr)
-    x_plot = np.linspace(np.min(slope_deg), np.max(slope_deg), 100) if slope_deg.size else np.array([])
+    fit_all = _fit_line(pitch_deg, cot_vals)
+    pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
+    fit_no_outliers = _fit_line(pitch_nr, cot_nr)
+    x_plot = np.linspace(np.min(pitch_deg), np.max(pitch_deg), 100) if pitch_deg.size else np.array([])
 
     def _plot(y_range: tuple[float, float] | None, suffix: str) -> Path:
         fig, ax = plt.subplots(figsize=(7.5, 5.5))
         hb = ax.hexbin(
-            slope_deg,
+            pitch_deg,
             cot_vals,
             gridsize=args.gridsize,
             cmap="viridis",
@@ -200,10 +206,10 @@ def main() -> None:
         )
         if y_range is not None:
             ax.set_ylim(y_range)
-        ax.set_xlabel("slope_mag_mean [deg]")
+        ax.set_xlabel("pitch_deg_mean [deg]")
         ax.set_ylabel("metric_cost_of_transport_mean")
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch mean slope vs mean cost_of_transport{title_suffix}")
+        ax.set_title(f"Patch mean robot pitch vs mean cost_of_transport{title_suffix}")
         if x_plot.size and fit_all is not None:
             ax.plot(x_plot, fit_all[0] * x_plot + fit_all[1], color="tab:red", lw=1.4, label="fit (all)")
         if x_plot.size and fit_no_outliers is not None:
@@ -215,7 +221,7 @@ def main() -> None:
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
-        base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "patch_slope_vs_cot.png"
+        base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "patch_pitch_vs_cot.png"
         out_path = base_out if suffix == "" else base_out.with_name(f"{base_out.stem}{suffix}{base_out.suffix}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=200)
