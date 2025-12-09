@@ -474,7 +474,7 @@ def compute_patch_cot(df_patch: pd.DataFrame,
     and excluding near-pure turning (high w_cmd_z with low linear command).
     Returns (COT, COT_trimmed_p95).
     """
-    # check for valid inputs
+    # Inputs & Safety Checks
     if not np.isfinite(mass) or not np.isfinite(gravity) or mass <= 0.0 or gravity <= 0.0:
         return (np.nan, np.nan)
     if power_col not in df_patch.columns or "t" not in df_patch or "dist_m" not in df_patch:
@@ -492,76 +492,108 @@ def compute_patch_cot(df_patch: pd.DataFrame,
     power = df_patch[power_col].to_numpy(dtype=float)
     t = df_patch["t"].to_numpy(dtype=float)
     dist = df_patch["dist_m"].to_numpy(dtype=float)
-    # valid samples
+
+    # Base validity mask (finite data)
     valid = np.isfinite(power) & np.isfinite(t) & np.isfinite(dist) & np.isfinite(v_cmd)
     if not np.any(valid):
         return (np.nan, np.nan)
 
-    low_cmd = v_cmd < max(min_cmd_speed, 0.0)
-
     def _expand_mask_by_time(base_mask: np.ndarray, times: np.ndarray, padding_s: float) -> np.ndarray:
-        if padding_s <= 0.0 or not np.any(base_mask):
-            return base_mask
-        out = base_mask.copy()
-        idx = np.nonzero(base_mask)[0]
-        for i in idx:
-            t0 = times[i]
-            j = i
-            while j >= 0 and (t0 - times[j]) <= padding_s:
-                out[j] = True
-                j -= 1
-            j = i + 1
-            n = len(times)
-            while j < n and (times[j] - t0) <= padding_s:
-                out[j] = True
-                j += 1
+        # Expand a boolean mask by padding True regions by padding_s seconds on each side.
+        if not np.any(base_mask): return base_mask
+        
+        # Find indices where mask switches from False->True or True->False
+        # This identifies "blocks" of True values
+        padded_mask = np.concatenate(([False], base_mask, [False]))
+        diffs = np.diff(padded_mask.astype(int))
+        starts_idx = np.where(diffs == 1)[0]
+        ends_idx = np.where(diffs == -1)[0] - 1
+        
+        out = np.zeros_like(base_mask, dtype=bool)
+        
+        # Expand only the block boundaries
+        for start, end in zip(starts_idx, ends_idx):
+            t_start = times[start] - padding_s
+            t_end = times[end] + padding_s
+            
+            # Binary search for new boundaries
+            new_start = np.searchsorted(times, t_start, side='left')
+            new_end = np.searchsorted(times, t_end, side='right')
+            
+            out[new_start:new_end] = True
+            
         return out
-
+    
+    # Mask A: Low Command Speed
+    low_cmd = v_cmd < max(min_cmd_speed, 0.0)
     if min_cmd_pad_s > 0.0:
+        # Expand low_cmd mask by padding in time
         low_cmd = _expand_mask_by_time(low_cmd, t, min_cmd_pad_s)
 
+    # Mask B: Turn-in-Place Commands
     turn_only = np.zeros_like(valid)
     if turn_min_wz > 0.0 and "w_cmd_z" in df_patch:
+        # Identify turn-in-place commands (turn and slow speed), exclude from COT
         w_cmd = np.abs(df_patch["w_cmd_z"].to_numpy(dtype=float))
         lin_thresh = turn_lin_thresh if (turn_lin_thresh is not None and np.isfinite(turn_lin_thresh)) else min_cmd_speed
         turn_only = valid & (w_cmd >= turn_min_wz) & (v_cmd < lin_thresh)
         if turn_pad_s > 0.0:
             turn_only = _expand_mask_by_time(turn_only, t, turn_pad_s)
 
+    # Combine masks
     valid &= ~(low_cmd | turn_only)
     if not np.any(valid):
         return (np.nan, np.nan)
 
-    # Integrate energy with forward differences; ignore negative dt
-    dt = np.diff(t, prepend=t[0])
-    dt = np.clip(dt, 0.0, None)
-    dt[~np.isfinite(dt)] = 0.0
+    # Integration & CoT Calculation
+    # Pre-calculate Raw Deltas
+    # Note: dist is cumulative (odometer), so diff gives incremental distance
+    raw_dt = np.diff(t, prepend=t[0]) # raw_dt[i] = t[i] - t[i-1]
+    raw_dist = np.diff(dist, prepend=dist[0])
+
+    # Clean raw deltas (handle gaps/reverse motion globally first)
+    raw_dt = np.clip(raw_dt, 0.0, None)
+    raw_dt[~np.isfinite(raw_dt)] = 0.0
+    
+    raw_dist = np.clip(raw_dist, 0.0, None) # Assume efficiency only for forward motion
+    raw_dist[~np.isfinite(raw_dist)] = 0.0
 
     def _cot_from_mask(mask: np.ndarray) -> float:
+        """
+        Calculate CoT on a specific subset mask.
+        Crucial: Only integrates intervals where BOTH current and previous 
+        samples are inside the mask to avoid spanning gaps.
+        """
         if not np.any(mask):
             return float("nan")
-        energy = np.nansum(power[mask] * dt[mask])
-        dist_masked = dist[mask]
-        finite_d = dist_masked[np.isfinite(dist_masked)]
-        if finite_d.size == 0:
-            return float("nan")
-        distance = float(np.nanmax(finite_d) - np.nanmin(finite_d))
+
+        # Identify continuous intervals valid under THIS mask
+        mask_prev = np.concatenate(([False], mask[:-1]))
+        valid_transitions = mask & mask_prev
+
+        # Sum energy and distance only over these valid transitions
+        # (We use the pre-calculated raw deltas, but filter them by the mask transitions)
+        energy = np.nansum(power[valid_transitions] * raw_dt[valid_transitions])
+        distance = np.nansum(raw_dist[valid_transitions])
+        
         if distance <= 0.0:
             return float("nan")
+            
         return energy / (mass * gravity * distance)
 
+    # 4. Final Calculations
     cot_all = _cot_from_mask(valid)
 
+    # Trimmed COT (Robustness against outliers)
     cot_trimmed = float("nan")
     if np.any(valid):
         try:
             lo, hi = np.nanpercentile(power[valid], [5.0, 95.0])
+            if np.isfinite(lo) and np.isfinite(hi):
+                trimmed_mask = valid & (power >= lo) & (power <= hi)
+                cot_trimmed = _cot_from_mask(trimmed_mask)
         except Exception:
-            lo = hi = np.nan
-        trimmed = valid
-        if np.isfinite(lo) and np.isfinite(hi):
-            trimmed = valid & (power >= lo) & (power <= hi)
-        cot_trimmed = _cot_from_mask(trimmed)
+            pass # Fallback to nan if percentile fails
 
     return (cot_all, cot_trimmed)
 
