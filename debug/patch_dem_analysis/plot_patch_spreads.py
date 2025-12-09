@@ -21,7 +21,17 @@ import pandas as pd
 # Make src/ importable when running from repo root
 import sys
 THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1] / "src"
+
+
+def _resolve_repo_root(file_path: Path) -> Path:
+    for parent in file_path.parents:
+        if (parent / "src").exists():
+            return parent
+    raise SystemExit("Could not find repository root (missing 'src' directory).")
+
+
+REPO_ROOT = _resolve_repo_root(THIS_FILE)
+SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 

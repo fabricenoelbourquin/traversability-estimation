@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Plot patch forward-oriented slope (deg) vs patch mean cost_of_transport.
-
-Forward slope is computed from slope_e_mean / slope_n_mean projected onto the
-robot's mean heading (bearing quaternion in the patch dataset).
+Plot patch mean slope magnitude (deg) vs patch mean cost_of_transport from the
+HDF5 dataset produced by build_patch_dataset.py.
 """
 
 from __future__ import annotations
@@ -19,7 +17,17 @@ import pandas as pd
 # Make src/ importable when running from repo root
 import sys
 THIS_FILE = Path(__file__).resolve()
-SRC_ROOT = THIS_FILE.parents[1] / "src"
+
+
+def _resolve_repo_root(file_path: Path) -> Path:
+    for parent in file_path.parents:
+        if (parent / "src").exists():
+            return parent
+    raise SystemExit("Could not find repository root (missing 'src' directory).")
+
+
+REPO_ROOT = _resolve_repo_root(THIS_FILE)
+SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -29,8 +37,7 @@ from utils.paths import get_paths
 DEFAULT_PATCH_SIZE_M: float = 5.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
 
-SLOPE_E_COL = "slope_e_mean"
-SLOPE_N_COL = "slope_n_mean"
+SLOPE_COL = "slope_mag_mean"
 COT_COL = "metric_cost_of_transport_mean"
 
 
@@ -93,77 +100,29 @@ def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[pd
     return dfs
 
 
-def _normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray):
-    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    n[n == 0.0] = 1.0
-    return qw / n, qx / n, qy / n, qz / n
-
-
-def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    candidates = [
-        ("bearing_qw", "bearing_qx", "bearing_qy", "bearing_qz"),
-        ("qw_WB", "qx_WB", "qy_WB", "qz_WB"),
-        ("qw", "qx", "qy", "qz"),
-    ]
-    for cols in candidates:
-        if all(c in df.columns for c in cols):
-            return tuple(df[c].to_numpy(dtype=np.float64) for c in cols)  # type: ignore
-    raise SystemExit("Quaternion columns not found (need bearing_qw..qz or qw_WB..qz_WB or qw..qz).")
-
-
-def _yaw_deg_from_quat(df: pd.DataFrame) -> np.ndarray:
-    qw, qx, qy, qz = _get_quaternion_block(df)
-    qw, qx, qy, qz = _normalize_quat_arrays(qw, qx, qy, qz)
-
-    xx = qx * qx
-    yy = qy * qy
-    zz = qz * qz
-    xy = qx * qy
-    xz = qx * qz
-    yz = qy * qz
-    wx = qw * qx
-    wy = qw * qy
-    wz = qw * qz
-
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r10 = 2.0 * (xy + wz)
-
-    yaw = np.arctan2(r10, r00)
-    yaw_deg = np.rad2deg(yaw) * -1.0  # navigation-friendly (north=0, clockwise positive)
-    return yaw_deg
-
-
 def _finite(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float64)
     return arr[np.isfinite(arr)]
 
 
+def _slope_to_deg(values: np.ndarray) -> np.ndarray:
+    return np.rad2deg(np.arctan(values.astype(np.float64)))
+
+
 def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    missing = [c for c in (SLOPE_E_COL, SLOPE_N_COL, COT_COL) if c not in df.columns]
-    if missing:
-        raise SystemExit(f"Required columns missing: {missing}")
-    yaw_deg = _yaw_deg_from_quat(df)
-    heading_rad = np.deg2rad(yaw_deg)
-
-    slope_e = df[SLOPE_E_COL].to_numpy(dtype=np.float64)
-    slope_n = df[SLOPE_N_COL].to_numpy(dtype=np.float64)
-
-    # Forward component: project (slope_e, slope_n) onto heading (east=north basis)
-    dir_e = np.sin(heading_rad)
-    dir_n = np.cos(heading_rad)
-    slope_forward = slope_e * dir_e + slope_n * dir_n
-    slope_forward_deg = np.rad2deg(np.arctan(slope_forward))
-
+    if SLOPE_COL not in df.columns or COT_COL not in df.columns:
+        raise SystemExit(f"Required columns missing: need '{SLOPE_COL}' and '{COT_COL}'.")
+    slope = _slope_to_deg(df[SLOPE_COL].to_numpy(dtype=np.float64))
     cot = df[COT_COL].to_numpy(dtype=np.float64)
-    mask = np.isfinite(slope_forward_deg) & np.isfinite(cot)
-    return slope_forward_deg[mask], cot[mask]
+    mask = np.isfinite(slope) & np.isfinite(cot)
+    return slope[mask], cot[mask]
 
 
-def _fit_quad(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float] | None:
-    if x.size < 3 or y.size < 3:
+def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
+    if x.size < 2 or y.size < 2:
         return None
-    coeffs = np.polyfit(x, y, 2)
-    return float(coeffs[0]), float(coeffs[1]), float(coeffs[2])
+    coeffs = np.polyfit(x, y, 1)
+    return float(coeffs[0]), float(coeffs[1])
 
 
 def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
@@ -176,7 +135,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot forward-oriented slope (deg) vs mean cost_of_transport for patches.")
+    ap = argparse.ArgumentParser(description="Plot mean slope magnitude (deg) vs mean cost_of_transport for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -199,7 +158,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_incline_patch_analysis/patch_oriented_slope_vs_cot.png).",
+        help="Output path for figure (default: reports/zz_incline_patch_analysis/patch_slope_vs_cot.png).",
     )
     ap.add_argument(
         "--gridsize",
@@ -229,20 +188,20 @@ def main() -> None:
         slope_all.append(s)
         cot_all.append(c)
 
-    slope_forward_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
+    slope_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
     cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
-    if slope_forward_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite oriented slope/cost_of_transport data to plot.")
+    if slope_deg.size == 0 or cot_vals.size == 0:
+        raise SystemExit("No finite slope/cost_of_transport data to plot.")
 
-    fit_all = _fit_quad(slope_forward_deg, cot_vals)
-    slope_nr, cot_nr = _remove_outliers(slope_forward_deg, cot_vals)
-    fit_no_outliers = _fit_quad(slope_nr, cot_nr)
-    x_plot = np.linspace(np.min(slope_forward_deg), np.max(slope_forward_deg), 100) if slope_forward_deg.size else np.array([])
+    fit_all = _fit_line(slope_deg, cot_vals)
+    slope_nr, cot_nr = _remove_outliers(slope_deg, cot_vals)
+    fit_no_outliers = _fit_line(slope_nr, cot_nr)
+    x_plot = np.linspace(np.min(slope_deg), np.max(slope_deg), 100) if slope_deg.size else np.array([])
 
     def _plot(y_range: tuple[float, float] | None, suffix: str) -> Path:
         fig, ax = plt.subplots(figsize=(7.5, 5.5))
         hb = ax.hexbin(
-            slope_forward_deg,
+            slope_deg,
             cot_vals,
             gridsize=args.gridsize,
             cmap="viridis",
@@ -251,16 +210,14 @@ def main() -> None:
         )
         if y_range is not None:
             ax.set_ylim(y_range)
-        ax.set_xlabel("forward slope [deg]")
+        ax.set_xlabel("slope_mag_mean [deg]")
         ax.set_ylabel("metric_cost_of_transport_mean")
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch forward-oriented slope vs mean cost_of_transport{title_suffix}")
+        ax.set_title(f"Patch mean slope vs mean cost_of_transport{title_suffix}")
         if x_plot.size and fit_all is not None:
-            a, b, c = fit_all
-            ax.plot(x_plot, a * x_plot * x_plot + b * x_plot + c, color="tab:red", lw=1.4, label="quad fit (all)")
+            ax.plot(x_plot, fit_all[0] * x_plot + fit_all[1], color="tab:red", lw=1.4, label="fit (all)")
         if x_plot.size and fit_no_outliers is not None:
-            a, b, c = fit_no_outliers
-            ax.plot(x_plot, a * x_plot * x_plot + b * x_plot + c, color="tab:orange", lw=1.4, linestyle="--", label="quad fit (no outliers)")
+            ax.plot(x_plot, fit_no_outliers[0] * x_plot + fit_no_outliers[1], color="tab:orange", lw=1.4, linestyle="--", label="fit (no outliers)")
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
         cb = fig.colorbar(hb, ax=ax)
@@ -268,7 +225,7 @@ def main() -> None:
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
-        base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "patch_oriented_slope_vs_cot.png"
+        base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "patch_slope_vs_cot.png"
         out_path = base_out if suffix == "" else base_out.with_name(f"{base_out.stem}{suffix}{base_out.suffix}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=200)
