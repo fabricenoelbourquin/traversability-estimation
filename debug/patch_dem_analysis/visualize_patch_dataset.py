@@ -8,9 +8,9 @@ Creates:
 
 Usage:
   # default: use dataset path from config/dataset.yaml (patches_{patch_size_m}m.h5) and all missions
-  python debug/visualize_patch_dataset.py
+  python debug/patch_dem_analysis/visualize_patch_dataset.py
   # custom dataset and optional mission filtering (repeatable)
-  python debug/visualize_patch_dataset.py /path/to/patches_5m.h5 --mission ETH-1 --mission GRI-1
+  python debug/patch_dem_analysis/visualize_patch_dataset.py /path/to/patches_5m.h5 --mission ETH-1 --mission GRI-1
 """
 from __future__ import annotations
 
@@ -28,6 +28,22 @@ from matplotlib import colors
 import numpy as np
 import pandas as pd
 import yaml
+
+# Make src/ importable when running from repo root
+THIS_FILE = Path(__file__).resolve()
+
+
+def _resolve_repo_root(file_path: Path) -> Path:
+    for parent in file_path.parents:
+        if (parent / "src").exists():
+            return parent
+    raise SystemExit("Could not find repository root (missing 'src' directory).")
+
+
+REPO_ROOT = _resolve_repo_root(THIS_FILE)
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 from utils.paths import get_paths  # noqa: E402
@@ -236,7 +252,12 @@ def main():
     ap = argparse.ArgumentParser(description="Visualize patch dataset slopes and compare to robot bearing.")
     ap.add_argument("dataset", nargs="?", type=Path, help="Path to the HDF5 produced by build_patch_dataset.py (default: config/dataset.yaml output)")
     ap.add_argument("--mission", action="append", help="Mission/group name to analyze (repeatable). Default: all groups in the file.")
-    ap.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent, help="Directory to write figures (default: debug/)")
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent,
+        help="Directory to write figures (default: debug/patch_dem_analysis/)",
+    )
     ap.add_argument("--bins", type=int, default=60, help="Histogram bins")
     args = ap.parse_args()
 
