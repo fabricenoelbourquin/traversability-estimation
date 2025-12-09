@@ -114,11 +114,11 @@ def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return pitch[mask], cot[mask]
 
 
-def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
-    if x.size < 2 or y.size < 2:
+def _fit_poly(x: np.ndarray, y: np.ndarray, deg: int) -> np.ndarray | None:
+    if x.size < deg + 1 or y.size < deg + 1:
         return None
-    coeffs = np.polyfit(x, y, 1)
-    return float(coeffs[0]), float(coeffs[1])
+    coeffs = np.polyfit(x, y, deg)
+    return coeffs.astype(float)
 
 
 def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
@@ -189,10 +189,10 @@ def main() -> None:
     if pitch_deg.size == 0 or cot_vals.size == 0:
         raise SystemExit("No finite pitch/cot_patch data to plot.")
 
-    fit_all = _fit_line(pitch_deg, cot_vals)
+    fit_all = _fit_poly(pitch_deg, cot_vals, deg=2)
     pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
-    fit_no_outliers = _fit_line(pitch_nr, cot_nr)
-    x_plot = np.linspace(np.min(pitch_deg), np.max(pitch_deg), 100) if pitch_deg.size else np.array([])
+    fit_no_outliers = _fit_poly(pitch_nr, cot_nr, deg=2)
+    x_plot = np.linspace(np.min(pitch_deg), np.max(pitch_deg), 200) if pitch_deg.size else np.array([])
 
     def _plot(y_range: tuple[float, float] | None, suffix: str) -> Path:
         fig, ax = plt.subplots(figsize=(7.5, 5.5))
@@ -211,9 +211,9 @@ def main() -> None:
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
         ax.set_title(f"Patch mean robot pitch vs cot_patch{title_suffix}")
         if x_plot.size and fit_all is not None:
-            ax.plot(x_plot, fit_all[0] * x_plot + fit_all[1], color="tab:red", lw=1.4, label="fit (all)")
+            ax.plot(x_plot, np.polyval(fit_all, x_plot), color="tab:red", lw=1.4, label="quad fit (all)")
         if x_plot.size and fit_no_outliers is not None:
-            ax.plot(x_plot, fit_no_outliers[0] * x_plot + fit_no_outliers[1], color="tab:orange", lw=1.4, linestyle="--", label="fit (no outliers)")
+            ax.plot(x_plot, np.polyval(fit_no_outliers, x_plot), color="tab:orange", lw=1.4, linestyle="--", label="quad fit (no outliers)")
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
         cb = fig.colorbar(hb, ax=ax)
