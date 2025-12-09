@@ -326,10 +326,14 @@ def main():
     })
 
     # Merge to metrics or synced
+    dem_cols = [c for c in out.columns if c != "t"]
     if args.write_to == "metrics":
         metrics_path = sync_dir / f"synced_{hz}Hz_metrics.parquet"
         if metrics_path.exists():
             m = pd.read_parquet(metrics_path)
+            drop_cols = [c for c in m.columns if c in dem_cols or c.endswith("_dup")]
+            if drop_cols:
+                m = m.drop(columns=drop_cols)
             m = m.merge(out, on="t", how="outer", suffixes=("", "_dup"))
             # drop any accidental *_dup columns (keep new ones)
             drop_dups = [c for c in m.columns if c.endswith("_dup")]
@@ -342,6 +346,9 @@ def main():
     else:
         # Overwrite synced with new columns
         df_full = pd.read_parquet(synced_path)
+        drop_cols = [c for c in df_full.columns if c in dem_cols or c.endswith("_dup")]
+        if drop_cols:
+            df_full = df_full.drop(columns=drop_cols)
         merged = df_full.merge(out, on="t", how="left")
         merged.to_parquet(synced_path, index=False)
         print(f"[save] {synced_path}  (rows: {len(merged)})")

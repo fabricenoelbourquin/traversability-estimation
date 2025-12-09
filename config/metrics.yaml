@@ -18,10 +18,16 @@ metrics:
 #    - energy_pos_cum
 #    - cot_running
   separate_output: true 
+
+# Parameters for speed and command speed filtering and normalization for COT
 params:
   max_speed_mps: 1
   min_speed_for_power_norm: 0.1     # > 1e-4
   min_cmd_speed_for_power_norm: 0.2
+  min_cmd_speed_pad_s: 2            # mark samples within this time of sub-threshold cmd speed as invalid
+  turn_only_min_w_cmd_z: 0.4        # rad/s; consider commands above this as turning
+  turn_only_max_v_cmd_for_turn: 0.6 # m/s; commands below this + above min_w considered turn-in-place
+  turn_only_pad_s: 3              # seconds padding around turn-in-place commands
 
 # Parameters for the local-plane-fitting DEM slope calculation
 dem_slope_params:
