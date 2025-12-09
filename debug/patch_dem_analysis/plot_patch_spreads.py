@@ -69,6 +69,41 @@ def _patch_label(patch_size_m: float | None) -> str:
     return f"{label_num}m"
 
 
+def _parse_patch_size(arg: str | None) -> float | None:
+    if arg is None:
+        return None
+    # accept "5", "5.0", "5m"
+    txt = str(arg).lower().rstrip()
+    if txt.endswith("m"):
+        txt = txt[:-1]
+    try:
+        return float(txt)
+    except Exception:
+        return None
+
+
+def _resolve_dataset_and_size(dataset_arg: str | None) -> tuple[Path, float | None]:
+    if dataset_arg:
+        p = Path(dataset_arg)
+        if p.exists():
+            # try to infer size from filename, else None
+            size = None
+            stem = p.stem
+            for token in stem.split("_"):
+                if token.endswith("m"):
+                    try:
+                        size = float(token[:-1])
+                        break
+                    except Exception:
+                        continue
+            return p, size
+        size = _parse_patch_size(dataset_arg)
+        if size is not None:
+            return _default_dataset_path(size), size
+    # fallback to default
+    return _default_dataset_path(DEFAULT_PATCH_SIZE_M), DEFAULT_PATCH_SIZE_M
+
+
 def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[tuple[str, str, pd.DataFrame]]:
     try:
         import h5py  # type: ignore
@@ -200,15 +235,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Plot spreads of patch-level slopes and cost-of-transport.")
     ap.add_argument(
         "--dataset",
-        type=Path,
+        type=str,
         default=None,
-        help="Path to patch HDF5 dataset (default: DATASETS/patches_<patch-size>m.h5).",
-    )
-    ap.add_argument(
-        "--patch-size",
-        type=float,
-        default=None,
-        help=f"Patch size to build default dataset path (meters, default: {DEFAULT_PATCH_SIZE_M}).",
+        help="Patch size (e.g., '5' or '5m') or explicit dataset path. Default uses PATCH_SIZE constant.",
     )
     ap.add_argument(
         "--missions",
@@ -240,8 +269,8 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
-    patch_label = _patch_label(args.patch_size)
+    dataset_path, patch_size_used = _resolve_dataset_and_size(args.dataset)
+    patch_label = _patch_label(patch_size_used)
     default_out_dir = DEFAULT_REPORT_DIR / patch_label
     out_dir = default_out_dir if args.output_dir == DEFAULT_REPORT_DIR else args.output_dir
     patch_groups = _load_patch_groups(dataset_path, args.missions)
