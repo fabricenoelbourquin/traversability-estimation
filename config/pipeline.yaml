@@ -4,14 +4,14 @@ bags:
   depth: false
 
 dataset:
-  enabled: true
+  enabled: false
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false # bool to enable/disable all visuals
+  enabled: true # bool to enable/disable all visuals
   timeseries:
     enabled: true
-    with_speeds: false    # include commanded and actual speed plots
+    with_speeds: true    # include commanded and actual speed plots
     overlay_pitch: true   # overlay pitch angle on metrics
     plot_time: true       # activate time plot
     plot_distance: true   # activate distance plot
@@ -22,7 +22,7 @@ visuals:
     emb_both: false
 
   dem3d:
-    enabled: true
+    enabled: false
     plot_trajectory: true   # if true, pipeline passes --plot-trajectory
 
   compare_dem_vs_quat_pitch_roll:

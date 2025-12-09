@@ -20,7 +20,9 @@ metrics:
   separate_output: true 
 params:
   max_speed_mps: 1
-  min_speed_for_power_norm: 0.08
+  min_speed_for_power_norm: 0.1     # > 1e-4
+  min_cmd_speed_for_power_norm: 0.2
+  min_cmd_speed_pad_s: 1          # mark samples within this time of sub-threshold cmd speed as invalid
 
 # Parameters for the local-plane-fitting DEM slope calculation
 dem_slope_params:
@@ -91,7 +93,7 @@ filters:
 
   cost_of_transport_speed:
     - type: hampel
-      window: 101
+      window: 51
       k: 3.0
     - type: moving_median
       window: 5
@@ -106,12 +108,12 @@ filters:
 
   cost_of_transport:
     - type: hampel
-      window: 101
+      window: 51
       k: 3.0
     - type: moving_median
-      window: 7
+      window: 5
     - type: moving_average
-      window: 35
+      window: 15
 
 robot:
   mass_kg: 30.0      
