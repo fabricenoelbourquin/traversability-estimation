@@ -774,6 +774,8 @@ def main():
     skipped_edges = 0
     skipped_height = 0
     skipped_robot = 0
+    skipped_dupe = 0
+    skipped_contained = 0
     patch_idx = 0
 
     for seg in segments:
@@ -912,6 +914,64 @@ def main():
     if not rows:
         raise SystemExit("No patches produced (all skipped).")
 
+    # Drop exact-duplicate patches (same center + time span) to avoid full inclusions from stride/rounding quirks.
+    deduped: list[dict] = []
+    seen: set[tuple] = set()
+
+    def _quant(val: float) -> float | None:
+        return float(round(float(val), 3)) if np.isfinite(val) else None
+
+    for r in rows:
+        key = (
+            _quant(r.get("center_e", float("nan"))),
+            _quant(r.get("center_n", float("nan"))),
+            _quant(r.get("t_start", float("nan"))),
+            _quant(r.get("t_end", float("nan"))),
+        )
+        if None in key:
+            deduped.append(r)
+            continue
+        if key in seen:
+            skipped_dupe += 1
+            continue
+        seen.add(key)
+        deduped.append(r)
+
+    rows = deduped
+
+    # Drop patches that are fully contained (in space + time) inside an earlier patch.
+    def _contained(inner: dict, outer: dict) -> bool:
+        # Spatial containment (square footprint, same patch size)
+        size = float(inner.get("patch_size_m", patch_size_m))
+        if not np.isfinite(size):
+            return False
+        dx = abs(float(inner.get("center_e", np.nan)) - float(outer.get("center_e", np.nan)))
+        dy = abs(float(inner.get("center_n", np.nan)) - float(outer.get("center_n", np.nan)))
+        if not (np.isfinite(dx) and np.isfinite(dy)):
+            return False
+        spatial_inside = (dx <= size / 2.0) and (dy <= size / 2.0)
+
+        # Temporal containment
+        t0_in = float(inner.get("t_start", np.nan))
+        t1_in = float(inner.get("t_end", np.nan))
+        t0_out = float(outer.get("t_start", np.nan))
+        t1_out = float(outer.get("t_end", np.nan))
+        temporal_inside = (
+            np.isfinite([t0_in, t1_in, t0_out, t1_out]).all() and
+            t0_in >= t0_out and t1_in <= t1_out
+        )
+
+        return spatial_inside and temporal_inside
+
+    filtered: list[dict] = []
+    for r in rows:
+        if any(_contained(r, kept) for kept in filtered):
+            skipped_contained += 1
+            continue
+        filtered.append(r)
+
+    rows = filtered
+
     df_out = pd.DataFrame(rows).sort_values("patch_index").reset_index(drop=True)
 
     # Output path
@@ -944,8 +1004,8 @@ def main():
     save_hdf(mp.mission_id, df_out, out_path, attrs, overwrite, compression)
 
     print(f"[ok] wrote {len(df_out)} patches -> {out_path}")
-    if skipped_edges or skipped_height or skipped_robot:
-        print(f"[info] skipped (edges={skipped_edges}, height={skipped_height}, robot={skipped_robot})")
+    if skipped_edges or skipped_height or skipped_robot or skipped_dupe or skipped_contained:
+        print(f"[info] skipped (edges={skipped_edges}, height={skipped_height}, robot={skipped_robot}, dupes={skipped_dupe}, contained={skipped_contained})")
 
 
 if __name__ == "__main__":
