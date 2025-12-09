@@ -422,7 +422,8 @@ def main() -> None:
         "--output-dir",
         type=Path,
         default=DEFAULT_REPORT_DIR,
-        help="Directory for saved figures (default: reports/zz_incline_patch_analysis).",
+        help="Directory for saved figures (default: reports/zz_incline_patch_analysis). "
+             "Plots are written under a cot_distributions/ subfolder.",
     )
     args = ap.parse_args()
 
@@ -433,6 +434,7 @@ def main() -> None:
 
     prepared_groups = [(name, display, _prepare_patch_df(df)) for name, display, df in patch_groups]
     metric_labels = [label for _, label in METRICS_TO_PLOT]
+    base_out_dir = args.output_dir / "cot_distributions"
 
     flatness_modes = [
         ("pitch", "pitch_deg", True, float(args.pitch_limit), f"|pitch|<= {args.pitch_limit}°"),
@@ -440,9 +442,11 @@ def main() -> None:
     ]
 
     for mode_name, column, use_abs, limit_deg, desc in flatness_modes:
+        if not any(column in df.columns for _, _, df in prepared_groups):
+            print(f"[warn] Column {column} missing in all missions; skipping {mode_name} mode.")
+            continue
         aggregated: dict[str, list[tuple[np.ndarray, np.ndarray | None]]] = {m: [] for m in metric_labels}
         aggregated_rest: dict[str, list[np.ndarray]] = {m: [] for m in metric_labels}
-        per_mission_samples: dict[str, list[tuple[str, np.ndarray]]] = {m: [] for m in metric_labels}
 
         for _, display, df in prepared_groups:
             flat_mask = _build_flat_mask(df, column, limit_deg, use_abs)
@@ -452,10 +456,6 @@ def main() -> None:
             for metric, (vals_flat, dist_w, vals_rest) in mission_results.items():
                 aggregated[metric].append((vals_flat, dist_w))
                 aggregated_rest[metric].append(vals_rest)
-                per_mission_samples[metric].append((display, vals_flat))
-                out_name = f"{_slugify(display)}_{metric}_flat_{mode_name}{limit_deg:.1f}.png"
-                title = f"{display} — {metric} ({desc}, patches)"
-                _plot_metric_distribution(metric, vals_flat, dist_w, title, args.output_dir / out_name)
 
         for metric, samples in aggregated.items():
             all_vals, all_weights = _stack_samples(samples)
@@ -464,13 +464,7 @@ def main() -> None:
                 continue
             out_name = f"ALL_{metric}_flat_{mode_name}{limit_deg:.1f}.png"
             title = f"Aggregate flat patches — {metric} ({desc})"
-            _plot_metric_distribution(metric, all_vals, all_weights, title, args.output_dir / out_name)
-
-        for metric, samples in per_mission_samples.items():
-            if not samples:
-                continue
-            out_name = f"COMPARE_MISSIONS_{metric}_flat_{mode_name}{limit_deg:.1f}.png"
-            _plot_box_by_mission(metric, samples, args.output_dir / out_name)
+            _plot_metric_distribution(metric, all_vals, all_weights, title, base_out_dir / out_name)
 
         for metric in metric_labels:
             flat_vals, _ = _stack_samples(aggregated[metric])
@@ -479,7 +473,7 @@ def main() -> None:
                 print(f"[warn] Missing flat/rest data for {metric} ({mode_name}); skipping flat-vs-rest plot.")
                 continue
             out_name = f"ALL_{metric}_flat_vs_rest_{mode_name}{limit_deg:.1f}.png"
-            _plot_flat_vs_rest(metric, flat_vals, rest_vals, desc, args.output_dir / out_name)
+            _plot_flat_vs_rest(metric, flat_vals, rest_vals, desc, base_out_dir / out_name)
 
 
 if __name__ == "__main__":
