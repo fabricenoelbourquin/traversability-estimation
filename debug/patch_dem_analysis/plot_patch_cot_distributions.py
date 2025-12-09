@@ -45,6 +45,12 @@ DEFAULT_PATCH_SIZE_M: float = 5.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
 
 
+def _patch_label(patch_size_m: float | None) -> str:
+    size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
+    label_num = f"{size:.3f}".rstrip("0").rstrip(".")
+    return f"{label_num}m"
+
+
 def _slugify(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
 
@@ -434,7 +440,8 @@ def main() -> None:
 
     prepared_groups = [(name, display, _prepare_patch_df(df)) for name, display, df in patch_groups]
     metric_labels = [label for _, label in METRICS_TO_PLOT]
-    base_out_dir = args.output_dir / "cot_distributions"
+    patch_label = _patch_label(args.patch_size)
+    base_out_dir = args.output_dir / patch_label / "cot_distributions"
 
     flatness_modes = [
         ("pitch", "pitch_deg", True, float(args.pitch_limit), f"|pitch|<= {args.pitch_limit}°"),

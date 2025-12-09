@@ -41,6 +41,12 @@ PITCH_COL = "pitch_deg_mean"
 COT_COL = "cot_patch"
 
 
+def _patch_label(patch_size_m: float | None) -> str:
+    size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
+    label_num = f"{size:.3f}".rstrip("0").rstrip(".")
+    return f"{label_num}m"
+
+
 def _decode_attr_val(val):
     if isinstance(val, (bytes, bytearray)):
         try:
@@ -173,6 +179,8 @@ def main() -> None:
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
+    patch_label = _patch_label(args.patch_size)
+    default_out = DEFAULT_REPORT_DIR / patch_label / "patch_pitch_vs_cot.png"
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
@@ -221,7 +229,7 @@ def main() -> None:
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
-        base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "patch_pitch_vs_cot.png"
+        base_out = args.output if args.output is not None else default_out
         out_path = base_out if suffix == "" else base_out.with_name(f"{base_out.stem}{suffix}{base_out.suffix}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=200)

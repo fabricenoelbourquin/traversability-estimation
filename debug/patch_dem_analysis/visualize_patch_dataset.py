@@ -28,6 +28,7 @@ from matplotlib import colors
 import numpy as np
 import pandas as pd
 import yaml
+import re
 
 # Make src/ importable when running from repo root
 THIS_FILE = Path(__file__).resolve()
@@ -47,6 +48,17 @@ if str(SRC_ROOT) not in sys.path:
 
 
 from utils.paths import get_paths  # noqa: E402
+
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
+
+# ---------------- Path helpers ----------------
+
+def _patch_label_from_dataset(dataset_path: Path) -> str:
+    m = re.search(r"patches_([0-9.]+)m", dataset_path.name)
+    if m:
+        val = m.group(1).rstrip(".")
+        return f"{val}m"
+    return "patches"
 
 # ---------------- Quaternion utilities (aligned with video_metric_viewer.py) ----------------
 
@@ -265,6 +277,9 @@ def main():
     dataset_path = args.dataset if args.dataset is not None else resolve_default_dataset_path(paths)
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
+    patch_label = _patch_label_from_dataset(dataset_path)
+    base_out_dir = DEFAULT_REPORT_DIR if args.out_dir == Path(__file__).resolve().parent else args.out_dir
+    out_dir = base_out_dir / patch_label
 
     missions = args.mission if args.mission else None
     df, used_groups = load_patch_dataframe(dataset_path, missions)
@@ -276,8 +291,8 @@ def main():
             raise SystemExit(f"Column '{key}' missing in dataset.")
         slopes_deg[key] = slope_to_deg(df[key].to_numpy(dtype=np.float64))
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    slope_fig = args.out_dir / f"patch_slopes_{mission_label}.png"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    slope_fig = out_dir / f"patch_slopes_{mission_label}.png"
     plot_slope_hist(slopes_deg, slope_fig, bins=args.bins)
 
     # Orientation comparison (if bearing quaternion is present)
@@ -290,7 +305,7 @@ def main():
         _yaw_deg, pitch_deg, roll_deg = euler_zyx_from_qWB(qw, qx, qy, qz)
         tilt_deg = np.hypot(pitch_deg, roll_deg)
 
-        orient_fig = args.out_dir / f"patch_slope_tilt_{mission_label}.png"
+        orient_fig = out_dir / f"patch_slope_tilt_{mission_label}.png"
         plot_orientation_comparison(slopes_deg, pitch_deg, roll_deg, tilt_deg, orient_fig, bins=args.bins)
 
         # Simple numeric correlation for quick inspection
