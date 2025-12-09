@@ -28,6 +28,7 @@ from pyproj import Transformer
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
+from utils.filtering import load_metrics_config
 
 
 # -------------------------- helpers --------------------------
@@ -458,10 +459,78 @@ def summarize_metric(df: pd.DataFrame, col: str) -> tuple[float, float, float]:
     return nan_stats(arr)
 
 
+def compute_patch_cot(df_patch: pd.DataFrame,
+                      mass: float,
+                      gravity: float,
+                      min_cmd_speed: float,
+                      power_col: str = "power") -> tuple[float, float]:
+    """
+    Distance-normalized energy over the patch using the specified power column,
+    skipping samples with commanded speed below min_cmd_speed. Returns (COT, COT_trimmed_p95).
+    """
+    # check for valid inputs
+    if not np.isfinite(mass) or not np.isfinite(gravity) or mass <= 0.0 or gravity <= 0.0:
+        return (np.nan, np.nan)
+    if power_col not in df_patch.columns or "t" not in df_patch or "dist_m" not in df_patch:
+        return (np.nan, np.nan)
+
+    # extract commanded speed
+    if "v_cmd" in df_patch:
+        v_cmd = df_patch["v_cmd"].to_numpy(dtype=float)
+    elif {"v_cmd_x", "v_cmd_y"}.issubset(df_patch.columns):
+        v_cmd = np.hypot(df_patch["v_cmd_x"], df_patch["v_cmd_y"])
+    else:
+        return (np.nan, np.nan)
+
+    # extract power, time, distance
+    power = df_patch[power_col].to_numpy(dtype=float)
+    t = df_patch["t"].to_numpy(dtype=float)
+    dist = df_patch["dist_m"].to_numpy(dtype=float)
+    # valid samples
+    valid = np.isfinite(power) & np.isfinite(t) & np.isfinite(dist) & np.isfinite(v_cmd)
+    valid &= v_cmd >= max(min_cmd_speed, 0.0)
+    if not np.any(valid):
+        return (np.nan, np.nan)
+
+    # Integrate energy with forward differences; ignore negative dt
+    dt = np.diff(t, prepend=t[0])
+    dt = np.clip(dt, 0.0, None)
+    dt[~np.isfinite(dt)] = 0.0
+
+    def _cot_from_mask(mask: np.ndarray) -> float:
+        if not np.any(mask):
+            return float("nan")
+        energy = np.nansum(power[mask] * dt[mask])
+        dist_masked = dist[mask]
+        finite_d = dist_masked[np.isfinite(dist_masked)]
+        if finite_d.size == 0:
+            return float("nan")
+        distance = float(np.nanmax(finite_d) - np.nanmin(finite_d))
+        if distance <= 0.0:
+            return float("nan")
+        return energy / (mass * gravity * distance)
+
+    cot_all = _cot_from_mask(valid)
+
+    cot_trimmed = float("nan")
+    if np.any(valid):
+        try:
+            lo, hi = np.nanpercentile(power[valid], [5.0, 95.0])
+        except Exception:
+            lo = hi = np.nan
+        trimmed = valid
+        if np.isfinite(lo) and np.isfinite(hi):
+            trimmed = valid & (power >= lo) & (power <= hi)
+        cot_trimmed = _cot_from_mask(trimmed)
+
+    return (cot_all, cot_trimmed)
+
+
 def aggregate_robot_patch(df_patch: pd.DataFrame,
                           metric_names: Iterable[str],
                           include_speed: bool,
-                          include_cmd_speed: bool) -> dict:
+                          include_cmd_speed: bool,
+                          cot_cfg: dict[str, float] | None) -> dict:
     out: dict[str, float] = {}
 
     for m in metric_names:
@@ -495,6 +564,17 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
             out["v_cmd_mean"], out["v_cmd_min"], out["v_cmd_max"] = nan_stats(vcmd)
         else:
             out["v_cmd_mean"] = out["v_cmd_min"] = out["v_cmd_max"] = np.nan
+        if cot_cfg:
+            cot_val, cot_trim = compute_patch_cot(
+                df_patch,
+                cot_cfg.get("mass", np.nan),
+                cot_cfg.get("gravity", np.nan),
+                cot_cfg.get("min_cmd_speed", 0.0),
+                cot_cfg.get("power_col", "power"),
+            )
+            out["cot_patch"] = cot_val
+            out["cot_patch_p95"] = cot_trim
+            out["cot_min_cmd_speed"] = cot_cfg.get("min_cmd_speed", np.nan)
 
     # Time span
     if "t" in df_patch:
@@ -619,6 +699,20 @@ def main():
     include_dino = bool(swiss_cfg.get("include_dino_embeddings", False))
 
     P = get_paths()
+
+    metrics_cfg_full = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
+    robot_cfg_full = (metrics_cfg_full.get("robot") or {})
+    params_cfg_full = (metrics_cfg_full.get("params") or {})
+    cot_cfg = {
+        "mass": float(robot_cfg_full.get("mass_kg", np.nan)),
+        "gravity": float(robot_cfg_full.get("gravity", 9.81)),
+        "min_cmd_speed": float(params_cfg_full.get(
+            "min_cmd_speed_for_power_norm",
+            params_cfg_full.get("min_speed_for_power_norm", 0.0),
+        )),
+        "power_col": str(metrics_cfg.get("cot_power_column", "power")),
+    }
+
     mp = resolve_mission_from_args(args, P)
 
     synced_path = resolve_synced_parquet(mp.synced, args.hz or input_cfg.get("hz"), prefer_metrics=True)
@@ -741,7 +835,7 @@ def main():
                 skipped_robot += 1
                 continue
 
-            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd)
+            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
 
             quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
             k1 = k2 = mean_curv = abs_curv = float("nan")

@@ -230,9 +230,9 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
         return pd.Series(np.nan, index=df.index)
 
     params = cfg.get("params") or {}
-    min_speed_cmd = float(params.get("min_speed_for_power_norm", 0.1))
+    min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-4)
+    min_speed_cmd = float(params.get("min_cmd_speed_for_power_norm", min_speed_actual))
     min_speed_cmd = max(min_speed_cmd, 0.0)
-    min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-2)
 
     filters_cfg = cfg.get("filters", {})
 

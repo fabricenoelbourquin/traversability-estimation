@@ -20,7 +20,8 @@ metrics:
   separate_output: true 
 params:
   max_speed_mps: 1
-  min_speed_for_power_norm: 0.08
+  min_speed_for_power_norm: 0.1     # > 1e-4
+  min_cmd_speed_for_power_norm: 0.2
 
 # Parameters for the local-plane-fitting DEM slope calculation
 dem_slope_params:

@@ -15,6 +15,7 @@ metrics:
   names: []                   # empty -> use metrics.names from config/metrics.yaml
   include_speed: true         # aggregate actual speed (mean/min/max)
   include_command_speed: true # aggregate commanded speed (mean/min/max)
+  cot_power_column: "power"   # power column to use for patch COT ("power" or "power_mech")
 
 output:
   path: null                  # default: <DATA_ROOT>/datasets
