@@ -4,11 +4,11 @@ bags:
   depth: false
 
 dataset:
-  enabled: true
+  enabled: false
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false # bool to enable/disable all visuals
+  enabled: true # bool to enable/disable all visuals
   timeseries:
     enabled: true
     with_speeds: true    # include commanded and actual speed plots
@@ -26,7 +26,7 @@ visuals:
     plot_trajectory: true   # if true, pipeline passes --plot-trajectory
 
   compare_dem_vs_quat_pitch_roll:
-    enabled: true
+    enabled: false
     smooth_win: 1           # >1 applies smoothing; pipeline passes --smooth-win N
 
   videos:

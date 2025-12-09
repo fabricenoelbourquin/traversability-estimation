@@ -465,10 +465,14 @@ def compute_patch_cot(df_patch: pd.DataFrame,
                       gravity: float,
                       min_cmd_speed: float,
                       power_col: str = "power",
-                      min_cmd_pad_s: float = 0.0) -> tuple[float, float]:
+                      min_cmd_pad_s: float = 0.0,
+                      turn_min_wz: float = 0.0,
+                      turn_lin_thresh: float | None = None,
+                      turn_pad_s: float = 0.0) -> tuple[float, float]:
     """
     Distance-normalized energy over the patch using the specified power column,
-    skipping samples with commanded speed below min_cmd_speed (optionally padded in time).
+    skipping samples with commanded speed below min_cmd_speed (optionally padded in time)
+    and excluding near-pure turning (high w_cmd_z with low linear command).
     Returns (COT, COT_trimmed_p95).
     """
     # check for valid inputs
@@ -516,7 +520,16 @@ def compute_patch_cot(df_patch: pd.DataFrame,
 
     if min_cmd_pad_s > 0.0:
         low_cmd = _expand_mask_by_time(low_cmd, t, min_cmd_pad_s)
-    valid &= ~low_cmd
+
+    turn_only = np.zeros_like(valid)
+    if turn_min_wz > 0.0 and "w_cmd_z" in df_patch:
+        w_cmd = np.abs(df_patch["w_cmd_z"].to_numpy(dtype=float))
+        lin_thresh = turn_lin_thresh if (turn_lin_thresh is not None and np.isfinite(turn_lin_thresh)) else min_cmd_speed
+        turn_only = valid & (w_cmd >= turn_min_wz) & (v_cmd < lin_thresh)
+        if turn_pad_s > 0.0:
+            turn_only = _expand_mask_by_time(turn_only, t, turn_pad_s)
+
+    valid &= ~(low_cmd | turn_only)
     if not np.any(valid):
         return (np.nan, np.nan)
 
@@ -600,6 +613,9 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
                 cot_cfg.get("min_cmd_speed", 0.0),
                 cot_cfg.get("power_col", "power"),
                 cot_cfg.get("min_cmd_pad_s", 0.0),
+                cot_cfg.get("turn_min_wz", 0.0),
+                cot_cfg.get("turn_lin_thresh", None),
+                cot_cfg.get("turn_pad_s", 0.0),
             )
             out["cot_patch"] = cot_val
             out["cot_patch_p95"] = cot_trim
@@ -740,6 +756,12 @@ def main():
             params_cfg_full.get("min_speed_for_power_norm", 0.0),
         )),
         "min_cmd_pad_s": float(params_cfg_full.get("min_cmd_speed_pad_s", 0.0)),
+        "turn_min_wz": float(params_cfg_full.get("turn_only_min_w_cmd_z", 0.0)),
+        "turn_lin_thresh": float(params_cfg_full.get(
+            "turn_only_max_v_cmd_for_turn",
+            params_cfg_full.get("min_cmd_speed_for_power_norm", 0.0),
+        )),
+        "turn_pad_s": float(params_cfg_full.get("turn_only_pad_s", 0.0)),
         "power_col": str(metrics_cfg.get("cot_power_column", "power")),
     }
 

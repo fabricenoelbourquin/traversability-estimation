@@ -257,6 +257,9 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     min_speed_cmd = float(params.get("min_cmd_speed_for_power_norm", min_speed_actual))
     min_speed_cmd = max(min_speed_cmd, 0.0)
     min_cmd_pad_s = float(params.get("min_cmd_speed_pad_s", 0.0))
+    turn_min_wz = float(params.get("turn_only_min_w_cmd_z", 0.0))
+    turn_lin_thresh = float(params.get("turn_only_max_v_cmd_for_turn", min_speed_cmd))
+    turn_pad_s = float(params.get("turn_only_pad_s", 0.0))
 
     filters_cfg = cfg.get("filters", {})
 
@@ -279,7 +282,15 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     if min_cmd_pad_s > 0.0 and "t" in df:
         too_slow_cmd = _expand_mask_by_time(too_slow_cmd, df["t"].to_numpy(dtype=np.float64), min_cmd_pad_s)
     too_slow_actual = valid & (speed_mag < min_speed_actual)
-    compute_mask = valid & ~(too_slow_cmd | too_slow_actual)
+
+    turn_only = np.zeros_like(valid)
+    if turn_min_wz > 0.0 and "w_cmd_z" in d.columns:
+        w_cmd = np.abs(d["w_cmd_z"].to_numpy(dtype=np.float64))
+        turn_only = valid & (w_cmd >= turn_min_wz) & (v_cmd_mag < turn_lin_thresh)
+        if turn_pad_s > 0.0 and "t" in df:
+            turn_only = _expand_mask_by_time(turn_only, df["t"].to_numpy(dtype=np.float64), turn_pad_s)
+
+    compute_mask = valid & ~(too_slow_cmd | too_slow_actual | turn_only)
     if np.any(compute_mask):
         denom_speed = np.maximum(speed_mag[compute_mask], min_speed_actual)
         out[compute_mask] = power_use[compute_mask] / (m * g * denom_speed)
