@@ -80,27 +80,6 @@ def _get_motor_constants(cfg: dict) -> tuple[float, float, float] | None:
     return R, k_t, G
 
 
-def _expand_mask_by_time(base_mask: np.ndarray, t: np.ndarray, padding_s: float) -> np.ndarray:
-    """Expand a boolean mask to include samples within padding_s of any True sample."""
-    if padding_s <= 0.0 or not np.any(base_mask):
-        return base_mask.copy()
-    t_arr = np.asarray(t, dtype=np.float64)
-    out = base_mask.copy()
-    idx = np.nonzero(base_mask)[0]
-    for i in idx:
-        t0 = t_arr[i]
-        j = i
-        while j >= 0 and (t0 - t_arr[j]) <= padding_s:
-            out[j] = True
-            j -= 1
-        j = i + 1
-        n = len(t_arr)
-        while j < n and (t_arr[j] - t0) <= padding_s:
-            out[j] = True
-            j += 1
-    return out
-
-
 # Metrics
 #   Each metric:
 #     - takes (df, cfg)
@@ -254,7 +233,6 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-4)
     min_speed_cmd = float(params.get("min_cmd_speed_for_power_norm", min_speed_actual))
     min_speed_cmd = max(min_speed_cmd, 0.0)
-    min_cmd_pad_s = float(params.get("min_cmd_speed_pad_s", 0.0))
 
     filters_cfg = cfg.get("filters", {})
 
@@ -274,8 +252,6 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
         return pd.Series(out, index=df.index)
 
     too_slow_cmd = valid & (v_cmd_mag < min_speed_cmd)
-    if min_cmd_pad_s > 0.0 and "t" in df:
-        too_slow_cmd = _expand_mask_by_time(too_slow_cmd, df["t"].to_numpy(dtype=np.float64), min_cmd_pad_s)
     too_slow_actual = valid & (speed_mag < min_speed_actual)
     compute_mask = valid & ~(too_slow_cmd | too_slow_actual)
     if np.any(compute_mask):

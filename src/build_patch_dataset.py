@@ -463,12 +463,10 @@ def compute_patch_cot(df_patch: pd.DataFrame,
                       mass: float,
                       gravity: float,
                       min_cmd_speed: float,
-                      power_col: str = "power",
-                      min_cmd_pad_s: float = 0.0) -> tuple[float, float]:
+                      power_col: str = "power") -> tuple[float, float]:
     """
     Distance-normalized energy over the patch using the specified power column,
-    skipping samples with commanded speed below min_cmd_speed (optionally padded in time).
-    Returns (COT, COT_trimmed_p95).
+    skipping samples with commanded speed below min_cmd_speed. Returns (COT, COT_trimmed_p95).
     """
     # check for valid inputs
     if not np.isfinite(mass) or not np.isfinite(gravity) or mass <= 0.0 or gravity <= 0.0:
@@ -490,32 +488,7 @@ def compute_patch_cot(df_patch: pd.DataFrame,
     dist = df_patch["dist_m"].to_numpy(dtype=float)
     # valid samples
     valid = np.isfinite(power) & np.isfinite(t) & np.isfinite(dist) & np.isfinite(v_cmd)
-    if not np.any(valid):
-        return (np.nan, np.nan)
-
-    low_cmd = v_cmd < max(min_cmd_speed, 0.0)
-
-    def _expand_mask_by_time(base_mask: np.ndarray, times: np.ndarray, padding_s: float) -> np.ndarray:
-        if padding_s <= 0.0 or not np.any(base_mask):
-            return base_mask
-        out = base_mask.copy()
-        idx = np.nonzero(base_mask)[0]
-        for i in idx:
-            t0 = times[i]
-            j = i
-            while j >= 0 and (t0 - times[j]) <= padding_s:
-                out[j] = True
-                j -= 1
-            j = i + 1
-            n = len(times)
-            while j < n and (times[j] - t0) <= padding_s:
-                out[j] = True
-                j += 1
-        return out
-
-    if min_cmd_pad_s > 0.0:
-        low_cmd = _expand_mask_by_time(low_cmd, t, min_cmd_pad_s)
-    valid &= ~low_cmd
+    valid &= v_cmd >= max(min_cmd_speed, 0.0)
     if not np.any(valid):
         return (np.nan, np.nan)
 
@@ -598,7 +571,6 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
                 cot_cfg.get("gravity", np.nan),
                 cot_cfg.get("min_cmd_speed", 0.0),
                 cot_cfg.get("power_col", "power"),
-                cot_cfg.get("min_cmd_pad_s", 0.0),
             )
             out["cot_patch"] = cot_val
             out["cot_patch_p95"] = cot_trim
@@ -738,7 +710,6 @@ def main():
             "min_cmd_speed_for_power_norm",
             params_cfg_full.get("min_speed_for_power_norm", 0.0),
         )),
-        "min_cmd_pad_s": float(params_cfg_full.get("min_cmd_speed_pad_s", 0.0)),
         "power_col": str(metrics_cfg.get("cot_power_column", "power")),
     }
 
@@ -803,9 +774,6 @@ def main():
     skipped_edges = 0
     skipped_height = 0
     skipped_robot = 0
-    skipped_dupe = 0
-    skipped_contained = 0
-    skipped_time_subset = 0
     patch_idx = 0
 
     for seg in segments:
@@ -868,10 +836,6 @@ def main():
                 continue
 
             robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
-            min_dist_m = float(patch_size_m)  # require travel at least the patch size
-            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
-                skipped_robot += 1
-                continue
 
             quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
             k1 = k2 = mean_curv = abs_curv = float("nan")
@@ -948,82 +912,6 @@ def main():
     if not rows:
         raise SystemExit("No patches produced (all skipped).")
 
-    # Drop exact-duplicate patches (same center + time span) to avoid full inclusions from stride/rounding quirks.
-    deduped: list[dict] = []
-    seen: set[tuple] = set()
-
-    def _quant(val: float) -> float | None:
-        return float(round(float(val), 3)) if np.isfinite(val) else None
-
-    for r in rows:
-        key = (
-            _quant(r.get("center_e", float("nan"))),
-            _quant(r.get("center_n", float("nan"))),
-            _quant(r.get("t_start", float("nan"))),
-            _quant(r.get("t_end", float("nan"))),
-        )
-        if None in key:
-            deduped.append(r)
-            continue
-        if key in seen:
-            skipped_dupe += 1
-            continue
-        seen.add(key)
-        deduped.append(r)
-
-    rows = deduped
-
-    # Drop patches that are fully contained (in space + time) inside an earlier patch.
-    def _contained(inner: dict, outer: dict) -> bool:
-        # Spatial containment (square footprint, same patch size)
-        size = float(inner.get("patch_size_m", patch_size_m))
-        if not np.isfinite(size):
-            return False
-        dx = abs(float(inner.get("center_e", np.nan)) - float(outer.get("center_e", np.nan)))
-        dy = abs(float(inner.get("center_n", np.nan)) - float(outer.get("center_n", np.nan)))
-        if not (np.isfinite(dx) and np.isfinite(dy)):
-            return False
-        spatial_inside = (dx <= size / 2.0) and (dy <= size / 2.0)
-
-        # Temporal containment
-        t0_in = float(inner.get("t_start", np.nan))
-        t1_in = float(inner.get("t_end", np.nan))
-        t0_out = float(outer.get("t_start", np.nan))
-        t1_out = float(outer.get("t_end", np.nan))
-        temporal_inside = (
-            np.isfinite([t0_in, t1_in, t0_out, t1_out]).all() and
-            t0_in >= t0_out and t1_in <= t1_out
-        )
-
-        return spatial_inside and temporal_inside
-
-    filtered: list[dict] = []
-    for r in rows:
-        if any(_contained(r, kept) for kept in filtered):
-            skipped_contained += 1
-            continue
-        filtered.append(r)
-
-    # Drop patches whose time span is fully contained in an earlier patch (per mission),
-    # regardless of spatial offset, to avoid near-duplicate temporal coverage.
-    time_filtered: list[dict] = []
-    def _time_subset(inner: dict, outer: dict, tol: float = 1e-3) -> bool:
-        t0_in = float(inner.get("t_start", np.nan))
-        t1_in = float(inner.get("t_end", np.nan))
-        t0_out = float(outer.get("t_start", np.nan))
-        t1_out = float(outer.get("t_end", np.nan))
-        if not np.isfinite([t0_in, t1_in, t0_out, t1_out]).all():
-            return False
-        return (t0_in >= t0_out - tol) and (t1_in <= t1_out + tol)
-
-    for r in filtered:
-        if any(_time_subset(r, kept) for kept in time_filtered):
-            skipped_time_subset += 1
-            continue
-        time_filtered.append(r)
-
-    rows = time_filtered
-
     df_out = pd.DataFrame(rows).sort_values("patch_index").reset_index(drop=True)
 
     # Output path
@@ -1056,8 +944,8 @@ def main():
     save_hdf(mp.mission_id, df_out, out_path, attrs, overwrite, compression)
 
     print(f"[ok] wrote {len(df_out)} patches -> {out_path}")
-    if skipped_edges or skipped_height or skipped_robot or skipped_dupe or skipped_contained or skipped_time_subset:
-        print(f"[info] skipped (edges={skipped_edges}, height={skipped_height}, robot={skipped_robot}, dupes={skipped_dupe}, contained={skipped_contained}, time_subset={skipped_time_subset})")
+    if skipped_edges or skipped_height or skipped_robot:
+        print(f"[info] skipped (edges={skipped_edges}, height={skipped_height}, robot={skipped_robot})")
 
 
 if __name__ == "__main__":
