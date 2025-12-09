@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot patch mean robot pitch (deg) vs patch mean cost_of_transport from the
+Plot patch mean robot pitch (deg) vs patch cot_patch from the
 HDF5 dataset produced by build_patch_dataset.py.
 """
 
@@ -34,11 +34,11 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 5.0
+DEFAULT_PATCH_SIZE_M: float = 7.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data"
 
 PITCH_COL = "pitch_deg_mean"
-COT_COL = "metric_cost_of_transport_mean"
+COT_COL = "cot_patch"
 
 
 def _decode_attr_val(val):
@@ -131,7 +131,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot mean robot pitch (deg) vs mean cost_of_transport for patches.")
+    ap = argparse.ArgumentParser(description="Plot mean robot pitch (deg) vs cot_patch for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -154,7 +154,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_incline_patch_analysis/patch_pitch_vs_cot.png).",
+        help="Output path for figure (default: reports/zz_patch_analysis_robot_data/patch_pitch_vs_cot.png).",
     )
     ap.add_argument(
         "--gridsize",
@@ -168,7 +168,7 @@ def main() -> None:
         type=float,
         metavar=("MIN", "MAX"),
         default=None,
-        help="Optional y-axis range (cost_of_transport). When set, saves both unrestricted and restricted plots.",
+        help="Optional y-axis range (cot_patch). When set, saves both unrestricted and restricted plots.",
     )
     args = ap.parse_args()
 
@@ -187,7 +187,7 @@ def main() -> None:
     pitch_deg = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
     cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
     if pitch_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite pitch/cost_of_transport data to plot.")
+        raise SystemExit("No finite pitch/cot_patch data to plot.")
 
     fit_all = _fit_line(pitch_deg, cot_vals)
     pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
@@ -207,9 +207,9 @@ def main() -> None:
         if y_range is not None:
             ax.set_ylim(y_range)
         ax.set_xlabel("pitch_deg_mean [deg]")
-        ax.set_ylabel("metric_cost_of_transport_mean")
+        ax.set_ylabel("cot_patch")
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch mean robot pitch vs mean cost_of_transport{title_suffix}")
+        ax.set_title(f"Patch mean robot pitch vs cot_patch{title_suffix}")
         if x_plot.size and fit_all is not None:
             ax.plot(x_plot, fit_all[0] * x_plot + fit_all[1], color="tab:red", lw=1.4, label="fit (all)")
         if x_plot.size and fit_no_outliers is not None:
