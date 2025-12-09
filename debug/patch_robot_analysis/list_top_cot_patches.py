@@ -17,6 +17,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+import yaml
 
 THIS_FILE = Path(__file__).resolve()
 
@@ -38,6 +39,7 @@ from utils.paths import get_paths
 
 DEFAULT_PATCH_SIZE_M: float = 7.0
 COT_COL = "cot_patch"
+DATASET_CFG = _resolve_repo_root(THIS_FILE) / "config" / "dataset.yaml"
 
 
 def _decode_attr_val(val):
@@ -104,6 +106,26 @@ def _finite(arr: np.ndarray) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
+def _load_selection_offsets(cfg_path: Path) -> dict[str, float]:
+    """Return per-mission time offsets from selection.time_ranges_s (min start per mission)."""
+    if not cfg_path.exists():
+        return {}
+    try:
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+    except Exception:
+        return {}
+    sel = (cfg.get("selection") or {}).get("time_ranges_s") or {}
+    offsets: dict[str, float] = {}
+    for mission, ranges in sel.items():
+        try:
+            starts = [float(r[0]) for r in ranges if isinstance(r, (list, tuple)) and len(r) == 2]
+        except Exception:
+            starts = []
+        if starts:
+            offsets[str(mission)] = float(np.nanmin(starts))
+    return offsets
+
+
 def _format_table(df: pd.DataFrame, cols: list[str]) -> str:
     df_fmt = df.copy()
     for c in cols:
@@ -141,12 +163,19 @@ def main() -> None:
         default=5,
         help="Number of top patches to list (default: 5).",
     )
+    ap.add_argument(
+        "--min",
+        action="store_true",
+        help="List the lowest cot_patch values instead of the highest.",
+    )
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
+
+    selection_offsets = _load_selection_offsets(DATASET_CFG)
 
     df_all = pd.concat(dfs, ignore_index=True)
     if COT_COL not in df_all.columns:
@@ -165,14 +194,15 @@ def main() -> None:
     else:
         baselines = {}
 
-    df_sorted = df_all.sort_values(COT_COL, ascending=False).head(max(args.top, 1))
+    df_sorted = df_all.sort_values(COT_COL, ascending=args.min).head(max(args.top, 1))
 
     if baselines:
         def _rel(val: float, mission: str) -> float:
             base = baselines.get(mission, math.nan)
             if not (np.isfinite(val) and np.isfinite(base)):
                 return math.nan
-            return float(val - base)
+            offset = selection_offsets.get(mission, 0.0)
+            return float(val - base + offset)
 
         df_sorted["t_start_rel_s"] = [
             _rel(row.get("t_start", math.nan), row.get("mission_display", "")) for _, row in df_sorted.iterrows()
