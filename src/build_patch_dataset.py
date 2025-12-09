@@ -838,6 +838,10 @@ def main():
                 continue
 
             robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
+            min_dist_m = float(patch_size_m)  # require travel at least the patch size
+            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
+                skipped_robot += 1
+                continue
 
             quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
             k1 = k2 = mean_curv = abs_curv = float("nan")
