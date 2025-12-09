@@ -559,8 +559,6 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
                           include_speed: bool,
                           include_cmd_speed: bool,
                           cot_cfg: dict[str, float] | None) -> dict:
-                          include_cmd_speed: bool,
-                          cot_cfg: dict[str, float] | None) -> dict:
     out: dict[str, float] = {}
 
     for m in metric_names:
