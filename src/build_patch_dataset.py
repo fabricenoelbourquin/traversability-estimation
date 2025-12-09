@@ -3,8 +3,8 @@
 Build a patch-level HDF5 dataset for one mission.
 
 Features per patch:
-  - Heightmap (DEM): mean/min/max slope in E, N, and magnitude, plus mean gradient orientation.
-  - Robot: mean/min/max for selected metrics, actual speed, commanded speed;
+  - Heightmap (DEM): single plane-fit slope in E/N/magnitude, gradient orientation, and quadratic-fit curvatures (k1/k2, mean, abs, directional along/ across heading).
+  - Robot: mean/percentile for selected metrics, actual speed, commanded speed, pitch [deg];
            distance traveled, time span, mean bearing quaternion.
 
 Patches are centered on the trajectory (distance-based stride) and use a square footprint.
@@ -207,6 +207,82 @@ def sample_gradients_planefit(z_grid: np.ndarray,
     return p_s, q_s
 
 
+def fit_plane_to_patch(z_patch: np.ndarray,
+                       rows_abs: np.ndarray,
+                       cols_abs: np.ndarray,
+                       center_row: int,
+                       center_col: int,
+                       res_x: float,
+                       res_y: float) -> tuple[float, float]:
+    """
+    Fit a single plane to all finite DEM samples in a patch.
+    Returns slopes along +E (grad_x) and +N (grad_y).
+    """
+    mask = np.isfinite(z_patch)
+    if not mask.any():
+        return (float("nan"), float("nan"))
+
+    dx_m = (cols_abs - center_col) * res_x
+    dy_m = (rows_abs - center_row) * res_y
+
+    A = np.stack([
+        dx_m[mask],
+        dy_m[mask],
+        np.ones(mask.sum(), dtype=np.float64)
+    ], axis=1)
+    b = z_patch[mask]
+
+    if A.shape[0] < 3:
+        return (float("nan"), float("nan"))
+
+    coeffs, _, rank, _ = np.linalg.lstsq(A, b, rcond=None)
+    if rank < 3:
+        return (float("nan"), float("nan"))
+
+    p, q = coeffs[0], coeffs[1]  # east, north slopes
+    return float(p), float(q)
+
+
+def fit_quadratic_patch(z_patch: np.ndarray,
+                        rows_abs: np.ndarray,
+                        cols_abs: np.ndarray,
+                        center_row: int,
+                        center_col: int,
+                        res_x: float,
+                        res_y: float) -> tuple[float, float, float, float, float, float] | None:
+    """
+    Fit quadratic surface z = a x^2 + b y^2 + c x y + d x + e y + f over the patch (x=east, y=north).
+    Returns coefficients (a, b, c, d, e, f) in meters-based coordinates.
+    """
+    mask = np.isfinite(z_patch)
+    if not mask.any():
+        # abort if no valid data
+        return None
+    # make (0,0) the patch center and convert pixels to meters
+    dx_m = (cols_abs - center_col) * res_x
+    dy_m = (rows_abs - center_row) * res_y
+
+    A = np.stack([
+        (dx_m * dx_m)[mask],
+        (dy_m * dy_m)[mask],
+        (dx_m * dy_m)[mask],
+        dx_m[mask],
+        dy_m[mask],
+        np.ones(mask.sum(), dtype=np.float64)
+    ], axis=1)
+    b = z_patch[mask]
+
+    if A.shape[0] < 6:
+        # need at least 6 points to fit quadratic
+        return None
+
+    coeffs, _, rank, _ = np.linalg.lstsq(A, b, rcond=None)
+    if rank < 6:
+        return None
+
+    return tuple(float(x) for x in coeffs)  # type: ignore[return-value]
+
+
 def compute_gradients(z: np.ndarray, transform: rasterio.Affine) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     res_x = abs(transform.a)
     res_y = abs(transform.e)
@@ -237,7 +313,9 @@ def nan_stats(arr: np.ndarray) -> tuple[float, float, float]:
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
         return (np.nan, np.nan, np.nan)
-    return (float(np.nanmean(finite)), float(np.nanmin(finite)), float(np.nanmax(finite)))
+    lower = float(np.nanpercentile(finite, 5.0))
+    upper = float(np.nanpercentile(finite, 95.0))
+    return (float(np.nanmean(finite)), lower, upper)
 
 
 def circular_mean(angles: np.ndarray) -> float:
@@ -310,6 +388,66 @@ def average_quaternion(df: pd.DataFrame) -> tuple[float, float, float, float]:
     return (np.nan, np.nan, np.nan, np.nan)
 
 
+def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    for cols in (("qw_WB", "qx_WB", "qy_WB", "qz_WB"), ("qw", "qx", "qy", "qz")):
+        if all(c in df.columns for c in cols):
+            return (
+                df[cols[0]].to_numpy(dtype=np.float64),
+                df[cols[1]].to_numpy(dtype=np.float64),
+                df[cols[2]].to_numpy(dtype=np.float64),
+                df[cols[3]].to_numpy(dtype=np.float64),
+            )
+    return None
+
+
+def normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray
+                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    n[n == 0.0] = 1.0
+    return qw / n, qx / n, qy / n, qz / n
+
+
+def compute_pitch_deg(df: pd.DataFrame) -> np.ndarray | None:
+    """
+    Compute pitch [deg] from body->world quaternions.
+    Matches visualization (nose-up positive) by flipping the sign.
+    """
+    block = get_quaternion_block(df)
+    if block is None:
+        return None
+    qw, qx, qy, qz = normalize_quat_arrays(*block)
+
+    xx = qx * qx; yy = qy * qy; zz = qz * qz
+    xy = qx * qy; xz = qx * qz; yz = qy * qz
+    wx = qw * qx; wy = qw * qy; wz = qw * qz
+
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r10 = 2.0 * (xy + wz)
+    r20 = 2.0 * (xz - wy)
+
+    pitch = np.arctan2(-r20, np.clip(np.sqrt(r00 * r00 + r10 * r10), 1e-12, None))
+    pitch_deg = np.rad2deg(pitch)
+    return -pitch_deg  # flip axis so nose-up is positive
+
+
+def yaw_from_quaternion(qw: float, qx: float, qy: float, qz: float) -> float:
+    """Extract yaw [rad] from a single quaternion (body→world), ENU frame."""
+    if not all(np.isfinite([qw, qx, qy, qz])):
+        return float("nan")
+    qw, qx, qy, qz = normalize_quat_arrays(
+        np.array([qw], dtype=np.float64),
+        np.array([qx], dtype=np.float64),
+        np.array([qy], dtype=np.float64),
+        np.array([qz], dtype=np.float64),
+    )
+    qw = float(qw[0]); qx = float(qx[0]); qy = float(qy[0]); qz = float(qz[0])
+    xx = qx * qx; yy = qy * qy; zz = qz * qz
+    xy = qx * qy; wz = qw * qz
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r10 = 2.0 * (xy + wz)
+    return float(math.atan2(r10, r00))
+
+
 def summarize_metric(df: pd.DataFrame, col: str) -> tuple[float, float, float]:
     if col not in df.columns:
         return (np.nan, np.nan, np.nan)
@@ -317,7 +455,7 @@ def summarize_metric(df: pd.DataFrame, col: str) -> tuple[float, float, float]:
     arr = arr[np.isfinite(arr)]
     if arr.size == 0:
         return (np.nan, np.nan, np.nan)
-    return (float(np.nanmean(arr)), float(np.nanmin(arr)), float(np.nanmax(arr)))
+    return nan_stats(arr)
 
 
 def aggregate_robot_patch(df_patch: pd.DataFrame,
@@ -386,6 +524,13 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
     out["bearing_qx"] = qx
     out["bearing_qy"] = qy
     out["bearing_qz"] = qz
+
+    # Pitch statistics (deg), using percentiles to reduce outlier influence
+    pitch = compute_pitch_deg(df_patch)
+    if pitch is not None and pitch.size:
+        out["pitch_deg_mean"], out["pitch_deg_min"], out["pitch_deg_max"] = nan_stats(pitch)
+    else:
+        out["pitch_deg_mean"] = out["pitch_deg_min"] = out["pitch_deg_max"] = np.nan
 
     return out
 
@@ -487,7 +632,6 @@ def main():
     include_cmd = bool(metrics_cfg.get("include_command_speed", True))
 
     # DEM
-    dem_params = load_dem_params(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
     dem_path = discover_dem_path(mp.maps, bool(input_cfg.get("prefer_dem_from_meta", True)), args.dem or input_cfg.get("dem_path"))
     print(f"[load] DEM: {dem_path}")
     with rasterio.open(dem_path) as ds:
@@ -530,7 +674,6 @@ def main():
         segments = [df]
 
     half_px = max(1, int(round((patch_size_m / 2.0) / res_m)))
-    pf_half = dem_params["patch_size_pixels"] // 2
     H, W = z.shape
 
     rows = []
@@ -568,32 +711,26 @@ def main():
             r = int(round(row_c[0])); c = int(round(col_c[0]))
             r0 = r - half_px; r1 = r + half_px + 1
             c0 = c - half_px; c1 = c + half_px + 1
-            # ensure enough margin for plane-fitting window
-            if (r0 - pf_half < 0 or c0 - pf_half < 0 or
-                    r1 + pf_half > H or c1 + pf_half > W):
+            # ensure patch fully inside DEM
+            if (r0 < 0 or c0 < 0 or r1 > H or c1 > W):
                 skipped_edges += 1
                 continue
 
             rows_grid = np.arange(r0, r1)
             cols_grid = np.arange(c0, c1)
-            rr, cc = np.meshgrid(rows_grid, cols_grid, indexing="ij")
-            p_patch, q_patch = sample_gradients_planefit(z, transform, rr.ravel(), cc.ravel(), dem_params)
-            p_patch = p_patch.reshape(rr.shape)
-            q_patch = q_patch.reshape(rr.shape)
-            grad_mag_patch = np.hypot(p_patch, q_patch)
-            grad_theta_patch = np.arctan2(q_patch, p_patch)
+            rr_abs, cc_abs = np.meshgrid(rows_grid, cols_grid, indexing="ij")
+            z_patch = z[r0:r1, c0:c1]
 
-            valid_cells = np.isfinite(grad_mag_patch)
+            valid_cells = np.isfinite(z_patch)
             valid_frac = float(valid_cells.mean()) if valid_cells.size else 0.0
             if valid_frac < min_height_frac:
                 skipped_height += 1
                 continue
 
-            slope_e_mean, slope_e_min, slope_e_max = nan_stats(p_patch)
-            slope_n_mean, slope_n_min, slope_n_max = nan_stats(q_patch)
-            slope_m_mean, slope_m_min, slope_m_max = nan_stats(grad_mag_patch)
-            grad_orient_mean = circular_mean(grad_theta_patch)
-
+            # Fit a single plane over the patch to estimate east/north slopes.
+            slope_e, slope_n = fit_plane_to_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
+            slope_mag = math.hypot(slope_e, slope_n)
+            grad_orient = float(math.atan2(slope_n, slope_e)) if np.isfinite(slope_e) and np.isfinite(slope_n) else float("nan")
             in_patch = (
                 (np.abs(east_seg - cx_e) <= (patch_size_m / 2.0)) &
                 (np.abs(north_seg - cy_n) <= (patch_size_m / 2.0)) &
@@ -605,6 +742,49 @@ def main():
                 continue
 
             robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd)
+
+            quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
+            k1 = k2 = mean_curv = abs_curv = float("nan")
+            curv_heading = curv_cross = float("nan")
+            yaw_rad = float("nan")
+            if quad_coeffs is not None:
+                a2, b2, c2, d2, e2, _ = quad_coeffs
+                grad_sq = d2 * d2 + e2 * e2
+                one_plus_g = 1.0 + grad_sq
+                denom_H = (one_plus_g ** 1.5)
+                f_xx = 2.0 * a2
+                f_xy = c2
+                f_yy = 2.0 * b2
+                if denom_H > 0.0 and np.isfinite([f_xx, f_xy, f_yy]).all():
+                    mean_curv = ((1.0 + e2 * e2) * f_xx - 2.0 * d2 * e2 * f_xy + (1.0 + d2 * d2) * f_yy) / (2.0 * denom_H)
+                    K = (f_xx * f_yy - f_xy * f_xy) / (one_plus_g ** 2)
+                    disc = mean_curv * mean_curv - K
+                    if disc < 0.0:
+                        disc = 0.0
+                    root = math.sqrt(disc)
+                    k1 = mean_curv + root
+                    k2 = mean_curv - root
+                    abs_curv = abs(k1) + abs(k2)
+
+                    denom_norm = math.sqrt(one_plus_g)
+                    L = f_xx / denom_norm
+                    M = f_xy / denom_norm
+                    N = f_yy / denom_norm
+                    E = 1.0 + d2 * d2
+                    F = d2 * e2
+                    G = 1.0 + e2 * e2
+
+                    yaw_rad = yaw_from_quaternion(robot_feats["bearing_qw"], robot_feats["bearing_qx"],
+                                                  robot_feats["bearing_qy"], robot_feats["bearing_qz"])
+                    if np.isfinite(yaw_rad):
+                        u = math.cos(yaw_rad); v = math.sin(yaw_rad)
+                        denom_dir = E * u * u + 2.0 * F * u * v + G * v * v
+                        if denom_dir != 0.0 and np.isfinite(denom_dir):
+                            curv_heading = (L * u * u + 2.0 * M * u * v + N * v * v) / denom_dir
+                        u_perp = -v; v_perp = u
+                        denom_perp = E * u_perp * u_perp + 2.0 * F * u_perp * v_perp + G * v_perp * v_perp
+                        if denom_perp != 0.0 and np.isfinite(denom_perp):
+                            curv_cross = (L * u_perp * u_perp + 2.0 * M * u_perp * v_perp + N * v_perp * v_perp) / denom_perp
 
             side_m = len(rows_grid) * res_m
             row = {
@@ -618,16 +798,17 @@ def main():
                 "center_e": float(cx_e),
                 "center_n": float(cy_n),
                 "height_valid_fraction": valid_frac,
-                "slope_e_mean": slope_e_mean,
-                "slope_e_min": slope_e_min,
-                "slope_e_max": slope_e_max,
-                "slope_n_mean": slope_n_mean,
-                "slope_n_min": slope_n_min,
-                "slope_n_max": slope_n_max,
-                "slope_mag_mean": slope_m_mean,
-                "slope_mag_min": slope_m_min,
-                "slope_mag_max": slope_m_max,
-                "grad_orientation_mean": grad_orient_mean,
+                "slope_e": float(slope_e),
+                "slope_n": float(slope_n),
+                "slope_mag": float(slope_mag),
+                "grad_orientation": grad_orient,
+                "k1": float(k1),
+                "k2": float(k2),
+                "curvature_mean": float(mean_curv),
+                "curvature_abs": float(abs_curv),
+                "curvature_heading": float(curv_heading),
+                "curvature_cross_heading": float(curv_cross),
+                "heading_yaw_rad": float(yaw_rad),
                 "samples": int(len(df_patch)),
             }
             row.update(robot_feats)

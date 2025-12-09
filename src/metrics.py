@@ -222,9 +222,11 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     m = float(robot.get("mass_kg", np.nan))
     g = float(robot.get("gravity", 9.81))
     if not np.isfinite(m) or m <= 0.0 or not np.isfinite(g) or g <= 0.0:
+        print("COT: invalid mass or gravity in config")
         return pd.Series(np.nan, index=df.index)
 
     if power.isna().all():
+        print("COT: power metric is all NaN")
         return pd.Series(np.nan, index=df.index)
 
     params = cfg.get("params") or {}
