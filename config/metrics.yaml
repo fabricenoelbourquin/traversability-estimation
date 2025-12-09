@@ -26,7 +26,7 @@ params:
 dem_slope_params:
   # Size of the square patch to fit the plane (e.g., 5 -> 5x5 pixels).
   # MUST be an odd number.
-  patch_size_pixels: 9
+  patch_size_pixels: 7
 
   # Method for weighting pixels in the least-squares fit.
   # "uniform": All pixels in the patch are weighted equally.
