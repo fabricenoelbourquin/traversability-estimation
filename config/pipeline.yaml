@@ -18,7 +18,7 @@ dataset:
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: true # bool to enable/disable all visuals
+  enabled: false # bool to enable/disable all visuals
   timeseries:
     enabled: true
     with_speeds: true    # include commanded and actual speed plots
