@@ -202,7 +202,7 @@ def cost_of_transport(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
     Instantaneous Cost of Transport (dimensionless):
       COT = total power / (m * g * |v_actual|).
-    Samples with |v_actual| below a configurable threshold are clamped to 0.
+    Samples with low commanded speed or |v_actual| below a threshold are marked NaN.
     """
     return _cost_of_transport_from_power(df, cfg, REGISTRY["power"](df, cfg))
 
@@ -215,7 +215,7 @@ def cost_of_transport_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
 
 def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series) -> pd.Series:
     d = _ensure_speed_columns(df)
-    if "v_actual" not in d.columns:
+    if "v_actual" not in d.columns or "v_cmd" not in d.columns:
         return pd.Series(np.nan, index=df.index)
 
     robot = cfg.get("robot") or {}
@@ -230,8 +230,9 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
         return pd.Series(np.nan, index=df.index)
 
     params = cfg.get("params") or {}
-    min_speed = float(params.get("min_speed_for_power_norm", 0.1))
-    min_speed = max(min_speed, 1e-4)
+    min_speed_cmd = float(params.get("min_speed_for_power_norm", 0.1))
+    min_speed_cmd = max(min_speed_cmd, 0.0)
+    min_speed_actual = max(float(params.get("min_speed_for_power_norm", 0.1)), 1e-2)
 
     filters_cfg = cfg.get("filters", {})
 
@@ -239,20 +240,23 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
     speed_filtered = filter_signal(speed_raw, "cost_of_transport_speed", filters_cfg=filters_cfg, log_fn=None)
     speed_use = speed_filtered if speed_filtered is not None else speed_raw
     speed_mag = np.abs(speed_use)
+    v_cmd_mag = np.abs(d["v_cmd"].to_numpy(dtype=np.float64))
 
     power_vals = power.to_numpy(dtype=np.float64)
     power_filtered = filter_signal(power_vals, "cost_of_transport_power", filters_cfg=filters_cfg, log_fn=None)
     power_use = power_vals if power_filtered is None else power_filtered
 
     out = np.full_like(speed_mag, np.nan, dtype=np.float64)
-    valid = np.isfinite(speed_mag) & np.isfinite(power_use)
+    valid = np.isfinite(speed_mag) & np.isfinite(power_use) & np.isfinite(v_cmd_mag)
     if not np.any(valid):
         return pd.Series(out, index=df.index)
 
-    slow_mask = valid & (speed_mag < min_speed)
-    fast_mask = valid & ~slow_mask
-    out[slow_mask] = 0.0
-    out[fast_mask] = power_use[fast_mask] / (m * g * speed_mag[fast_mask])
+    too_slow_cmd = valid & (v_cmd_mag < min_speed_cmd)
+    too_slow_actual = valid & (speed_mag < min_speed_actual)
+    compute_mask = valid & ~(too_slow_cmd | too_slow_actual)
+    if np.any(compute_mask):
+        denom_speed = np.maximum(speed_mag[compute_mask], min_speed_actual)
+        out[compute_mask] = power_use[compute_mask] / (m * g * denom_speed)
 
     ratio_filtered = filter_signal(out, "cost_of_transport", filters_cfg=filters_cfg, log_fn=None)
     final_vals = out if ratio_filtered is None else ratio_filtered
