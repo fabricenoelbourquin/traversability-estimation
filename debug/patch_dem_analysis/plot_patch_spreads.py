@@ -63,6 +63,12 @@ def _default_dataset_path(patch_size_m: float | None) -> Path:
     return Path(get_paths()["DATASETS"]) / f"patches_{label}m.h5"
 
 
+def _patch_label(patch_size_m: float | None) -> str:
+    size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
+    label_num = f"{size:.3f}".rstrip("0").rstrip(".")
+    return f"{label_num}m"
+
+
 def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[tuple[str, str, pd.DataFrame]]:
     try:
         import h5py  # type: ignore
@@ -235,6 +241,9 @@ def main() -> None:
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
+    patch_label = _patch_label(args.patch_size)
+    default_out_dir = DEFAULT_REPORT_DIR / patch_label
+    out_dir = default_out_dir if args.output_dir == DEFAULT_REPORT_DIR else args.output_dir
     patch_groups = _load_patch_groups(dataset_path, args.missions)
     if not patch_groups:
         raise SystemExit("No missions found in dataset (after filtering).")
@@ -242,7 +251,7 @@ def main() -> None:
     slope_data = _collect_slope_data(patch_groups)
     cot_data = _collect_cot_data(patch_groups)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Slope figure
     fig_s, axes_s = plt.subplots(1, 2, figsize=(12, 5))
@@ -263,7 +272,7 @@ def main() -> None:
         "spread [deg]",
     )
     fig_s.tight_layout(rect=[0, 0, 1, 0.98])
-    out_s = args.output_dir / "ALL_patch_slope_spreads.png"
+    out_s = out_dir / "ALL_patch_slope_spreads.png"
     fig_s.savefig(out_s, dpi=200)
     print(f"[ok] wrote {out_s}")
     plt.close(fig_s)
@@ -287,7 +296,7 @@ def main() -> None:
         "spread",
     )
     fig_c.tight_layout(rect=[0, 0, 1, 0.98])
-    out_c = args.output_dir / "ALL_patch_cot_spreads.png"
+    out_c = out_dir / "ALL_patch_cot_spreads.png"
     fig_c.savefig(out_c, dpi=200)
     print(f"[ok] wrote {out_c}")
     plt.close(fig_c)
