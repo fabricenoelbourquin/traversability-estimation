@@ -1,6 +1,6 @@
 # Default configuration for patch-level HDF5 dataset creation.
 patch:
-  size_m: 7.0                 # square patch size (meters)
+  size_m: 5.0                 # square patch size (meters)
   overlap_ratio: 0.5          # 0..0.5; stride = size * (1 - overlap_ratio) when stride_m is null
   stride_m: null              # optional explicit stride; overrides overlap_ratio when set
   min_height_valid_frac: 0.6  # require this fraction of finite DEM gradients in a patch
