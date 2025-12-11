@@ -34,7 +34,7 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 7.0
+DEFAULT_PATCH_SIZE_M: float = 9.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data"
 
 PITCH_COL = "pitch_deg_mean"

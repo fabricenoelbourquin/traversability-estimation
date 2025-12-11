@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Compare patch mean robot pitch (deg) with DEM slope magnitude (deg) for patches.
+Compare patch cot_patch with cot_patch_p95.
+
+Creates:
+  - Hexbin of cot_patch vs cot_patch_p95 with x=y reference.
+  - Histogram of the difference (cot_patch - cot_patch_p95).
 """
 
 from __future__ import annotations
@@ -33,11 +37,11 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 9.0
-DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_compare_dem_robot"
+DEFAULT_PATCH_SIZE_M: float = 5.0
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_cot_correlation_checks"
 
-SLOPE_COL = "slope_mag"
-PITCH_COL = "pitch_deg_mean"
+COT_COL = "cot_patch"
+COT_P95_COL = "cot_patch_p95"
 
 
 def _decode_attr_val(val):
@@ -47,12 +51,6 @@ def _decode_attr_val(val):
         except Exception:
             return val
     return val
-
-
-def _patch_label(patch_size_m: float | None) -> str:
-    size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
-    label_num = f"{size:.3f}".rstrip("0").rstrip(".")
-    return f"{label_num}m"
 
 
 def _default_dataset_path(patch_size_m: float | None) -> Path:
@@ -105,40 +103,19 @@ def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[pd
     return dfs
 
 
-def _finite(arr: np.ndarray) -> np.ndarray:
-    arr = np.asarray(arr, dtype=np.float64)
-    return arr[np.isfinite(arr)]
+def _finite_pair(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.isfinite(a) & np.isfinite(b)
+    return a[mask], b[mask]
 
 
-def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    missing = [c for c in (PITCH_COL, SLOPE_COL) if c not in df.columns]
-    if missing:
-        raise SystemExit(f"Required columns missing: {missing}")
-    pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
-    slope = df[SLOPE_COL].to_numpy(dtype=np.float64)
-    slope_deg = np.rad2deg(np.arctan(slope))
-    mask = np.isfinite(pitch) & np.isfinite(slope_deg)
-    return pitch[mask], slope_deg[mask]
-
-
-def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
+def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     if x.size < 2 or y.size < 2:
-        return None
-    coeffs = np.polyfit(x, y, 1)
-    return float(coeffs[0]), float(coeffs[1])
-
-
-def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
-    if x.size == 0 or y.size == 0:
-        return x, y
-    x_low, x_high = np.percentile(x, [pct_low, pct_high])
-    y_low, y_high = np.percentile(y, [pct_low, pct_high])
-    mask = (x >= x_low) & (x <= x_high) & (y >= y_low) & (y <= y_high)
-    return x[mask], y[mask]
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot pitch_deg_mean vs DEM slope magnitude (deg) for patches.")
+    ap = argparse.ArgumentParser(description="Compare cot_patch to cot_patch_p95.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -161,7 +138,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_compare_dem_robot/<patch-size>/pitch_vs_slope.png).",
+        help="Output path for figure (default: reports/zz_cot_correlation_checks/cot_vs_cot_p95.png).",
     )
     ap.add_argument(
         "--gridsize",
@@ -172,44 +149,49 @@ def main() -> None:
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
-    patch_label = _patch_label(args.patch_size)
-    default_out = DEFAULT_REPORT_DIR / patch_label / "pitch_vs_slope.png"
+    base_out = args.output if args.output is not None else DEFAULT_REPORT_DIR / "cot_vs_cot_p95.png"
 
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
 
-    pitch_all: list[np.ndarray] = []
-    slope_all: list[np.ndarray] = []
-    for df in dfs:
-        p, s = _prepare(df)
-        pitch_all.append(p)
-        slope_all.append(s)
+    for col in (COT_COL, COT_P95_COL):
+        if any(col not in df.columns for df in dfs):
+            raise SystemExit(f"Required column '{col}' missing in dataset.")
 
-    pitch_vals = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
-    slope_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
-    if pitch_vals.size == 0 or slope_deg.size == 0:
-        raise SystemExit("No finite pitch/slope data to plot.")
+    cot = np.concatenate([df[COT_COL].to_numpy(dtype=np.float64) for df in dfs])
+    cot_p95 = np.concatenate([df[COT_P95_COL].to_numpy(dtype=np.float64) for df in dfs])
 
-    base_out = args.output if args.output is not None else default_out
+    cot_f, cot_p95_f = _finite_pair(cot, cot_p95)
+    if cot_f.size == 0:
+        raise SystemExit("No finite COT/COT_p95 data to plot.")
 
-    fig, ax = plt.subplots(figsize=(7.5, 5.5))
-    hb = ax.hexbin(
-        pitch_vals,
-        slope_deg,
-        gridsize=args.gridsize,
-        cmap="viridis",
-        mincnt=1,
-        linewidths=0.0,
-    )
-    ax.set_xlabel("pitch_deg_mean [deg]")
-    ax.set_ylabel("slope_mag_mean [deg]")
-    ax.set_title("Patch pitch vs DEM slope magnitude")
-    cb = fig.colorbar(hb, ax=ax)
+    r = _pearson(cot_f, cot_p95_f)
+    print(f"[info] Pearson r (cot_patch vs cot_patch_p95): {r:.4f} (n={cot_f.size})")
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    hb = axes[0].hexbin(cot_p95_f, cot_f, gridsize=args.gridsize, cmap="viridis", mincnt=1, linewidths=0.0)
+    axes[0].set_xlabel("cot_patch_p95")
+    axes[0].set_ylabel("cot_patch")
+    axes[0].set_title(f"COT vs COT_p95 (r={r:.2f})")
+    lim_min = min(np.min(cot_p95_f), np.min(cot_f))
+    lim_max = max(np.max(cot_p95_f), np.max(cot_f))
+    diag = np.linspace(lim_min, lim_max, 100)
+    axes[0].plot(diag, diag, color="tab:gray", linestyle="--", linewidth=1.0, label="x=y")
+    axes[0].legend()
+    cb = fig.colorbar(hb, ax=axes[0])
     cb.set_label("patch count")
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
+    axes[0].grid(alpha=0.25)
 
+    diff = cot_f - cot_p95_f
+    axes[1].hist(diff, bins=60, color="tab:purple", alpha=0.8)
+    axes[1].set_xlabel("cot_patch - cot_patch_p95")
+    axes[1].set_ylabel("patch count")
+    axes[1].set_title("Difference histogram")
+    axes[1].grid(alpha=0.25)
+
+    fig.tight_layout()
     base_out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(base_out, dpi=200)
     plt.close(fig)
