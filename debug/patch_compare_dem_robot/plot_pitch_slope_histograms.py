@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Compare patch mean robot pitch (deg) with DEM slope magnitude (deg) for patches.
+Plot histograms comparing robot pitch to oriented DEM slope for patches.
+
+Generates two figures:
+  1) pitch vs oriented slope vs difference (pitch - slope) in degrees.
+  2) |pitch| vs |oriented slope| vs difference |pitch| - |slope|.
 """
 
 from __future__ import annotations
@@ -33,10 +37,11 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 9.0
+DEFAULT_PATCH_SIZE_M: float = 3.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_compare_dem_robot"
 
-SLOPE_COL = "slope_mag"
+SLOPE_E_COL = "slope_e"
+SLOPE_N_COL = "slope_n"
 PITCH_COL = "pitch_deg_mean"
 
 
@@ -53,6 +58,10 @@ def _patch_label(patch_size_m: float | None) -> str:
     size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
     label_num = f"{size:.3f}".rstrip("0").rstrip(".")
     return f"{label_num}m"
+
+
+def _slugify(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
 
 
 def _default_dataset_path(patch_size_m: float | None) -> Path:
@@ -110,35 +119,88 @@ def _finite(arr: np.ndarray) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
+def _normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray):
+    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    n[n == 0.0] = 1.0
+    return qw / n, qx / n, qy / n, qz / n
+
+
+def _yaw_deg_from_quat(df: pd.DataFrame) -> np.ndarray:
+    candidates = [
+        ("bearing_qw", "bearing_qx", "bearing_qy", "bearing_qz"),
+        ("qw_WB", "qx_WB", "qy_WB", "qz_WB"),
+        ("qw", "qx", "qy", "qz"),
+    ]
+    for cols in candidates:
+        if all(c in df.columns for c in cols):
+            qw, qx, qy, qz = (df[c].to_numpy(dtype=np.float64) for c in cols)
+            qw, qx, qy, qz = _normalize_quat_arrays(qw, qx, qy, qz)
+            xx = qx * qx
+            yy = qy * qy
+            zz = qz * qz
+            xy = qx * qy
+            xz = qx * qz
+            yz = qy * qz
+            wx = qw * qx
+            wy = qw * qy
+            wz = qw * qz
+            r00 = 1.0 - 2.0 * (yy + zz)
+            r10 = 2.0 * (xy + wz)
+            yaw = np.arctan2(r10, r00)
+            yaw_deg = np.rad2deg(yaw) * -1.0  # navigation-friendly (north=0, clockwise positive)
+            return yaw_deg
+    raise SystemExit("Quaternion columns not found (need bearing_qw..qz or qw_WB..qz_WB or qw..qz).")
+
+
 def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    missing = [c for c in (PITCH_COL, SLOPE_COL) if c not in df.columns]
+    missing = [c for c in (SLOPE_E_COL, SLOPE_N_COL, PITCH_COL) if c not in df.columns]
     if missing:
         raise SystemExit(f"Required columns missing: {missing}")
+    yaw_deg = _yaw_deg_from_quat(df)
+    heading_rad = np.deg2rad(-yaw_deg)
+
+    slope_e = df[SLOPE_E_COL].to_numpy(dtype=np.float64)
+    slope_n = df[SLOPE_N_COL].to_numpy(dtype=np.float64)
+
+    dir_e = np.sin(heading_rad)
+    dir_n = np.cos(heading_rad)
+    slope_forward = slope_e * dir_e + slope_n * dir_n
+    slope_forward_deg = np.rad2deg(np.arctan(slope_forward))
+
     pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
-    slope = df[SLOPE_COL].to_numpy(dtype=np.float64)
-    slope_deg = np.rad2deg(np.arctan(slope))
-    mask = np.isfinite(pitch) & np.isfinite(slope_deg)
-    return pitch[mask], slope_deg[mask]
+    mask = np.isfinite(slope_forward_deg) & np.isfinite(pitch)
+    return pitch[mask], slope_forward_deg[mask]
 
 
-def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
-    if x.size < 2 or y.size < 2:
-        return None
-    coeffs = np.polyfit(x, y, 1)
-    return float(coeffs[0]), float(coeffs[1])
+def _plot_histograms(pitch: np.ndarray, slope: np.ndarray, title: str, out_path: Path) -> None:
+    diff = pitch - slope
+    fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+    axes[0].hist(pitch, bins=60, alpha=0.8, color="tab:blue")
+    axes[0].set_title("pitch [deg]")
+    axes[0].set_ylabel("count")
+    axes[0].grid(alpha=0.25)
 
+    axes[1].hist(slope, bins=60, alpha=0.8, color="tab:orange")
+    axes[1].set_title("oriented slope [deg]")
+    axes[1].set_ylabel("count")
+    axes[1].grid(alpha=0.25)
 
-def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
-    if x.size == 0 or y.size == 0:
-        return x, y
-    x_low, x_high = np.percentile(x, [pct_low, pct_high])
-    y_low, y_high = np.percentile(y, [pct_low, pct_high])
-    mask = (x >= x_low) & (x <= x_high) & (y >= y_low) & (y <= y_high)
-    return x[mask], y[mask]
+    axes[2].hist(diff, bins=60, alpha=0.8, color="tab:green")
+    axes[2].set_title("pitch - slope [deg]")
+    axes[2].set_xlabel("degrees")
+    axes[2].set_ylabel("count")
+    axes[2].grid(alpha=0.25)
+
+    fig.suptitle(title, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"[ok] wrote {out_path}")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot pitch_deg_mean vs DEM slope magnitude (deg) for patches.")
+    ap = argparse.ArgumentParser(description="Plot pitch vs oriented slope histograms for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -158,62 +220,68 @@ def main() -> None:
         help="Optional mission ids/displays to include (default: all missions in the dataset).",
     )
     ap.add_argument(
-        "--output",
-        type=Path,
+        "--exclude",
+        nargs="*",
         default=None,
-        help="Output path for figure (default: reports/zz_compare_dem_robot/<patch-size>/pitch_vs_slope.png).",
+        help="Mission names/displays to exclude from the plots.",
     )
     ap.add_argument(
-        "--gridsize",
-        type=int,
-        default=50,
-        help="Hexbin grid size (default: 50).",
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: reports/zz_compare_dem_robot/<patch-size>/).",
     )
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
     patch_label = _patch_label(args.patch_size)
-    default_out = DEFAULT_REPORT_DIR / patch_label / "pitch_vs_slope.png"
+    base_out_dir = args.output_dir if args.output_dir is not None else DEFAULT_REPORT_DIR / patch_label
 
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
 
+    exclude_set = set(args.exclude) if args.exclude else set()
+    if exclude_set:
+        dfs = [d for d in dfs if str(d["mission_display"].iloc[0]) not in exclude_set]
+        if not dfs:
+            raise SystemExit("All missions excluded; nothing to plot.")
+
     pitch_all: list[np.ndarray] = []
     slope_all: list[np.ndarray] = []
     for df in dfs:
         p, s = _prepare(df)
-        pitch_all.append(p)
-        slope_all.append(s)
+        if p.size and s.size:
+            pitch_all.append(p)
+            slope_all.append(s)
 
-    pitch_vals = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
-    slope_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
-    if pitch_vals.size == 0 or slope_deg.size == 0:
+    if not pitch_all or not slope_all:
         raise SystemExit("No finite pitch/slope data to plot.")
 
-    base_out = args.output if args.output is not None else default_out
+    pitch_vals = _finite(np.concatenate(pitch_all))
+    slope_vals = _finite(np.concatenate(slope_all))
+    if pitch_vals.size == 0 or slope_vals.size == 0:
+        raise SystemExit("No finite pitch/slope data to plot.")
 
-    fig, ax = plt.subplots(figsize=(7.5, 5.5))
-    hb = ax.hexbin(
+    suffix = ""
+    if exclude_set:
+        suffix = "_excl-" + "_".join(_slugify(m) for m in sorted(exclude_set))
+
+    # Raw signed
+    _plot_histograms(
         pitch_vals,
-        slope_deg,
-        gridsize=args.gridsize,
-        cmap="viridis",
-        mincnt=1,
-        linewidths=0.0,
+        slope_vals,
+        "Pitch vs oriented slope (deg)",
+        base_out_dir / f"pitch_vs_oriented_slope_hist{suffix}.png",
     )
-    ax.set_xlabel("pitch_deg_mean [deg]")
-    ax.set_ylabel("slope_mag_mean [deg]")
-    ax.set_title("Patch pitch vs DEM slope magnitude")
-    cb = fig.colorbar(hb, ax=ax)
-    cb.set_label("patch count")
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
 
-    base_out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(base_out, dpi=200)
-    plt.close(fig)
-    print(f"[ok] wrote {base_out}")
+    # Magnitude
+    _plot_histograms(
+        np.abs(pitch_vals),
+        np.abs(slope_vals),
+        "Pitch vs oriented slope magnitudes (deg)",
+        base_out_dir / f"pitch_vs_oriented_slope_mag_hist{suffix}.png",
+    )
 
 
 if __name__ == "__main__":

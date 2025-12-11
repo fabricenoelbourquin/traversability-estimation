@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Compare patch mean robot pitch (deg) with DEM slope magnitude (deg) for patches.
+Compare patch mean robot pitch (deg) with DEM forward-oriented slope (deg) for patches.
+Forward slope is computed from slope_e/slope_n projected onto the robot's bearing quaternion.
 """
 
 from __future__ import annotations
@@ -33,10 +34,11 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 9.0
+DEFAULT_PATCH_SIZE_M: float = 5.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_compare_dem_robot"
 
-SLOPE_COL = "slope_mag"
+SLOPE_E_COL = "slope_e"
+SLOPE_N_COL = "slope_n"
 PITCH_COL = "pitch_deg_mean"
 
 
@@ -110,22 +112,59 @@ def _finite(arr: np.ndarray) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
+def _normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray):
+    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    n[n == 0.0] = 1.0
+    return qw / n, qx / n, qy / n, qz / n
+
+
+def _yaw_deg_from_quat(df: pd.DataFrame) -> np.ndarray:
+    candidates = [
+        ("bearing_qw", "bearing_qx", "bearing_qy", "bearing_qz"),
+        ("qw_WB", "qx_WB", "qy_WB", "qz_WB"),
+        ("qw", "qx", "qy", "qz"),
+    ]
+    for cols in candidates:
+        if all(c in df.columns for c in cols):
+            qw, qx, qy, qz = (df[c].to_numpy(dtype=np.float64) for c in cols)
+            qw, qx, qy, qz = _normalize_quat_arrays(qw, qx, qy, qz)
+            xx = qx * qx
+            yy = qy * qy
+            zz = qz * qz
+            xy = qx * qy
+            xz = qx * qz
+            yz = qy * qz
+            wx = qw * qx
+            wy = qw * qy
+            wz = qw * qz
+            r00 = 1.0 - 2.0 * (yy + zz)
+            r10 = 2.0 * (xy + wz)
+            yaw = np.arctan2(r10, r00)
+            yaw_deg = np.rad2deg(yaw) * -1.0  # navigation-friendly (north=0, clockwise positive)
+            return yaw_deg
+    raise SystemExit("Quaternion columns not found (need bearing_qw..qz or qw_WB..qz_WB or qw..qz).")
+
+
 def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    missing = [c for c in (PITCH_COL, SLOPE_COL) if c not in df.columns]
+    missing = [c for c in (SLOPE_E_COL, SLOPE_N_COL, PITCH_COL) if c not in df.columns]
     if missing:
         raise SystemExit(f"Required columns missing: {missing}")
+    yaw_deg = _yaw_deg_from_quat(df)
+    # Invert heading sign to align DEM gradient direction with robot forward (nav-friendly yaw flips).
+    heading_rad = np.deg2rad(-yaw_deg)
+
+    slope_e = df[SLOPE_E_COL].to_numpy(dtype=np.float64)
+    slope_n = df[SLOPE_N_COL].to_numpy(dtype=np.float64)
+
+    # Forward component: project (slope_e, slope_n) onto heading (east=north basis)
+    dir_e = np.sin(heading_rad)
+    dir_n = np.cos(heading_rad)
+    slope_forward = slope_e * dir_e + slope_n * dir_n
+    slope_forward_deg = np.rad2deg(np.arctan(slope_forward))
+
     pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
-    slope = df[SLOPE_COL].to_numpy(dtype=np.float64)
-    slope_deg = np.rad2deg(np.arctan(slope))
-    mask = np.isfinite(pitch) & np.isfinite(slope_deg)
-    return pitch[mask], slope_deg[mask]
-
-
-def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
-    if x.size < 2 or y.size < 2:
-        return None
-    coeffs = np.polyfit(x, y, 1)
-    return float(coeffs[0]), float(coeffs[1])
+    mask = np.isfinite(slope_forward_deg) & np.isfinite(pitch)
+    return pitch[mask], slope_forward_deg[mask]
 
 
 def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
@@ -138,7 +177,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot pitch_deg_mean vs DEM slope magnitude (deg) for patches.")
+    ap = argparse.ArgumentParser(description="Plot pitch_deg_mean vs oriented DEM slope (deg) for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -161,7 +200,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_compare_dem_robot/<patch-size>/pitch_vs_slope.png).",
+        help="Output path for figure (default: reports/zz_compare_dem_robot/<patch-size>/pitch_vs_oriented_slope.png).",
     )
     ap.add_argument(
         "--gridsize",
@@ -169,11 +208,17 @@ def main() -> None:
         default=50,
         help="Hexbin grid size (default: 50).",
     )
+    ap.add_argument(
+        "--show-missions",
+        action="store_true",
+        help="Color by mission instead of patch count; outputs *_missions.png.",
+    )
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
     patch_label = _patch_label(args.patch_size)
-    default_out = DEFAULT_REPORT_DIR / patch_label / "pitch_vs_slope.png"
+    default_name = "pitch_vs_oriented_slope_missions.png" if args.show_missions else "pitch_vs_oriented_slope.png"
+    default_out = DEFAULT_REPORT_DIR / patch_label / default_name
 
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
@@ -181,32 +226,63 @@ def main() -> None:
 
     pitch_all: list[np.ndarray] = []
     slope_all: list[np.ndarray] = []
+    mission_points: list[tuple[str, np.ndarray, np.ndarray]] = []
     for df in dfs:
         p, s = _prepare(df)
+        if p.size == 0 or s.size == 0:
+            continue
         pitch_all.append(p)
         slope_all.append(s)
+        mission_points.append((df["mission_display"].iloc[0], p, s))
 
     pitch_vals = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
     slope_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
     if pitch_vals.size == 0 or slope_deg.size == 0:
-        raise SystemExit("No finite pitch/slope data to plot.")
+        raise SystemExit("No finite pitch/oriented slope data to plot.")
 
     base_out = args.output if args.output is not None else default_out
 
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
-    hb = ax.hexbin(
-        pitch_vals,
-        slope_deg,
-        gridsize=args.gridsize,
-        cmap="viridis",
-        mincnt=1,
-        linewidths=0.0,
-    )
+    if args.show_missions:
+        cmap = plt.get_cmap("tab20")
+        unique_missions = [m for m, _, _ in mission_points]
+        color_map = {m: cmap(i % cmap.N) for i, m in enumerate(sorted(set(unique_missions)))}
+        for m, p, s in mission_points:
+            ax.scatter(p, s, s=14, color=color_map[m], alpha=0.8, label=m)
+        # deduplicate legend
+        handles, labels = ax.get_legend_handles_labels()
+        seen = set()
+        uniq_h, uniq_l = [], []
+        for h, l in zip(handles, labels):
+            if l in seen:
+                continue
+            seen.add(l)
+            uniq_h.append(h)
+            uniq_l.append(l)
+        if uniq_h:
+            ax.legend(uniq_h, uniq_l, title="mission", loc="upper left")
+    else:
+        hb = ax.hexbin(
+            pitch_vals,
+            slope_deg,
+            gridsize=args.gridsize,
+            cmap="viridis",
+            mincnt=1,
+            linewidths=0.0,
+        )
+        cb = fig.colorbar(hb, ax=ax)
+        cb.set_label("patch count")
+
     ax.set_xlabel("pitch_deg_mean [deg]")
-    ax.set_ylabel("slope_mag_mean [deg]")
-    ax.set_title("Patch pitch vs DEM slope magnitude")
-    cb = fig.colorbar(hb, ax=ax)
-    cb.set_label("patch count")
+    ax.set_ylabel("oriented slope [deg]")
+    ax.set_title("Patch pitch vs oriented DEM slope")
+    # 45-degree reference line (pitch == slope)
+    lim_min = min(np.min(pitch_vals), np.min(slope_deg))
+    lim_max = max(np.max(pitch_vals), np.max(slope_deg))
+    diag = np.linspace(lim_min, lim_max, 100)
+    ax.plot(diag, diag, color="tab:gray", linestyle="--", linewidth=1.0, label="pitch = slope")
+    if not args.show_missions:
+        ax.legend(loc="upper left")
     ax.grid(alpha=0.25)
     fig.tight_layout()
 

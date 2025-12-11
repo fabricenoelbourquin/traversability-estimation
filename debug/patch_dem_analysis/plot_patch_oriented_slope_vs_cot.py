@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Plot patch forward-oriented slope (deg) vs patch mean cost_of_transport.
+Plot patch forward-oriented slope (deg) vs patch cot_patch.
 
-Forward slope is computed from slope_e_mean / slope_n_mean projected onto the
-robot's mean heading (bearing quaternion in the patch dataset).
+Forward slope is computed from slope_e / slope_n projected onto the robot's
+mean heading (bearing quaternion in the patch dataset).
 """
 
 from __future__ import annotations
@@ -36,12 +36,12 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 5.0
+DEFAULT_PATCH_SIZE_M: float = 9.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
 
-SLOPE_E_COL = "slope_e_mean"
-SLOPE_N_COL = "slope_n_mean"
-COT_COL = "metric_cost_of_transport_mean"
+SLOPE_E_COL = "slope_e"
+SLOPE_N_COL = "slope_n"
+COT_COL = "cot_patch"
 
 
 def _decode_attr_val(val):
@@ -192,7 +192,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot forward-oriented slope (deg) vs mean cost_of_transport for patches.")
+    ap = argparse.ArgumentParser(description="Plot forward-oriented slope (deg) vs cot_patch for patches.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -229,7 +229,7 @@ def main() -> None:
         type=float,
         metavar=("MIN", "MAX"),
         default=None,
-        help="Optional y-axis range (cost_of_transport). When set, saves both unrestricted and restricted plots.",
+        help="Optional y-axis range (cot_patch). When set, saves both unrestricted and restricted plots.",
     )
     args = ap.parse_args()
 
@@ -250,7 +250,7 @@ def main() -> None:
     slope_forward_deg = _finite(np.concatenate(slope_all)) if slope_all else np.array([])
     cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
     if slope_forward_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite oriented slope/cost_of_transport data to plot.")
+        raise SystemExit("No finite oriented slope/cot_patch data to plot.")
 
     fit_all = _fit_quad(slope_forward_deg, cot_vals)
     slope_nr, cot_nr = _remove_outliers(slope_forward_deg, cot_vals)
@@ -270,9 +270,9 @@ def main() -> None:
         if y_range is not None:
             ax.set_ylim(y_range)
         ax.set_xlabel("forward slope [deg]")
-        ax.set_ylabel("metric_cost_of_transport_mean")
+        ax.set_ylabel("cot_patch")
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch forward-oriented slope vs mean cost_of_transport{title_suffix}")
+        ax.set_title(f"Patch forward-oriented slope vs cot_patch{title_suffix}")
         if x_plot.size and fit_all is not None:
             a, b, c = fit_all
             ax.plot(x_plot, a * x_plot * x_plot + b * x_plot + c, color="tab:red", lw=1.4, label="quad fit (all)")

@@ -37,7 +37,7 @@ from utils.paths import get_paths
 DEFAULT_PATCH_SIZE_M: float = 5.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_incline_patch_analysis"
 
-SLOPE_COL = "slope_mag_mean"
+SLOPE_COL = "slope_mag"
 COT_COL = "metric_cost_of_transport_mean"
 
 
