@@ -1,4 +1,9 @@
-frames:
-  world: enu_origin   # your fixed world frame for ENU
-  base:  base         # base or anymal/base depending on bag
+topics:
+  cmd_vel: /anymal/twist_command         # commanded twist;
+  odom: /anymal/state_estimator/odometry # robot odometry pose/velocity
+  gps: /boxi/inertial_explorer/tc/navsatfix           # GNSS fix (NavSatFix)
+  imu: /anymal/imu                       # IMU measurements
 
+frames:
+  world: enu_origin   # fixed world frame for ENU
+  base:  base
