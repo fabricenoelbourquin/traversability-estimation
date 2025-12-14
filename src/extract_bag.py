@@ -854,6 +854,20 @@ def main():
         outputs = extract_tables(reader, topics, frames_cfg, out_dir, args.overwrite)
 
     # Save per-mission metadata
+    # Debug: print a summary of the topic names + message types that were consumed.
+    topic_types = {
+        alias: {
+            "topic": name,
+            "msg_type": present.get(name),
+        }
+        for alias, name in topics.items()
+    }
+    print("\n[debug] Topics consumed (name -> msg type)")
+    for alias, entry in topic_types.items():
+        topic_name = entry["topic"]
+        msg_type = entry["msg_type"] or "(type unknown)"
+        print(f"  - {alias:>8}: {topic_name} [{msg_type}]")
+
     topics_used = {
         "mission_id": mission_id,
         "mission_folder": mission_folder,
