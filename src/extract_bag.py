@@ -7,6 +7,8 @@ Examples:
   python src/extract_bag.py --mission-id e97e35ad-dd7b-49c4-a158-95aba246520e
   # Overwrite existing Parquet:
   python src/extract_bag.py --mission HEAP-1 --overwrite
+
+Requires explicit topic names in config/topics.yaml (cmd_vel, odom, gps, imu).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -31,32 +33,8 @@ from utils.rosbag_tools import filter_valid_rosbags
 
 from rosbags.highlevel import AnyReader
 
-TOPIC_RULES = {
-    "cmd_vel": {
-        "name": re.compile(r"(^|/)cmd_vel$|command.*(twist|vel)|twist_command", re.I),
-        "types": (
-            "geometry_msgs/msg/Twist",
-            "geometry_msgs/msg/TwistStamped",
-            "geometry_msgs/Twist",
-            "geometry_msgs/TwistStamped",
-        ),
-    },
-    "odom": {
-        "name": re.compile(r"odom|odometry|state_estimator/odometry", re.I),
-        "types": ("nav_msgs/msg/Odometry", "nav_msgs/Odometry"),
-        "prefer": re.compile(r"anymal", re.I),
-    },
-    "gps": {
-        "name": re.compile(r"navsatfix|gps|gnss|fix", re.I),
-        "types": ("sensor_msgs/msg/NavSatFix", "sensor_msgs/NavSatFix"),
-        "prefer": re.compile(r"cpt7|inertial_explorer", re.I),
-    },
-    "imu": {
-        "name": re.compile(r"(^|/)imu($|/)", re.I),
-        "types": ("sensor_msgs/msg/Imu", "sensor_msgs/Imu"),
-        "prefer": re.compile(r"anymal|adis|stim", re.I),
-    },
-}
+# Topics we expect to extract; set explicitly in config/topics.yaml
+REQUIRED_TOPICS = ("cmd_vel", "odom", "gps", "imu")
 
 # --------------------- helpers ---------------------
 
@@ -76,43 +54,59 @@ def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
 
+def _available_topics_summary(conns, limit: int = 30) -> str:
+    """Pretty-print the topics present in the opened bags (for error messages)."""
+    pairs = sorted({(c.topic, c.msgtype) for c in conns})
+    lines = [f"  - {t} ({mt})" for t, mt in pairs[:limit]]
+    if len(pairs) > limit:
+        lines.append(f"  ... {len(pairs) - limit} more")
+    return "\n".join(lines) if lines else "  (no topics found)"
+
+
 def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
     """
     Choose topic names for cmd_vel, odom, gps, imu.
-    Preference:
-      - explicit names in topics.yaml (if provided)
-      - heuristics by name + msg type
+    No guessing: expects explicit topic names in topics.yaml like:
+      topics:
+        cmd_vel: /anymal/twist_command
+        odom:    /anymal/state_estimator/odometry
+        gps:     /cpt7/ie/gnss/navsatfix
+        imu:     /anymal/imu
     Returns a dict like {"cmd_vel": "/anymal/twist_command", "odom": "...", ...}
     """
-    explicit = (topics_cfg or {}).get("topics", {})
-    chosen = {key: explicit.get(key) for key in TOPIC_RULES}
-    items = [(c.topic, c.msgtype) for c in conns]
+    available = {c.topic: c.msgtype for c in conns}
+    explicit = (topics_cfg or {}).get("topics") or {}
 
-    def pick_rule(rule: dict) -> str | None:
-        strict = [
-            topic for topic, msg_type in items
-            if rule["name"].search(topic) and msg_type in rule["types"]
-        ]
-        if not strict:
-            strict = [
-                topic for topic, msg_type in items
-                if rule["name"].search(topic) or msg_type in rule["types"]
-            ]
-        if not strict:
-            return None
+    if not explicit:
+        raise SystemExit(
+            "[error] No topics configured in topics.yaml.\n"
+            "Add a `topics` mapping with at least cmd_vel, odom, gps, imu.\n"
+            "Available topics in these bags:\n"
+            f"{_available_topics_summary(conns)}"
+        )
 
-        prefer = rule.get("prefer")
-        if prefer:
-            for topic in strict:
-                if prefer.search(topic):
-                    return topic
-        return strict[0]
+    chosen: dict[str, str] = {}
+    missing: list[str] = []
+    for key in REQUIRED_TOPICS:
+        topic = explicit.get(key)
+        if not topic:
+            missing.append(key)
+            continue
+        if topic not in available:
+            print(
+                f"[warn] Configured {key} topic '{topic}' not found in bag; skipping.",
+                file=sys.stderr,
+            )
+            continue
+        chosen[key] = topic
 
-    for key, rule in TOPIC_RULES.items():
-        if not chosen.get(key):
-            chosen[key] = pick_rule(rule)
+    if missing:
+        print(
+            "[warn] topics.yaml missing entries for: " + ", ".join(missing),
+            file=sys.stderr,
+        )
 
-    return {k: v for k, v in chosen.items() if v}
+    return chosen
 
 def _probe_anymal_joint_order(reader, topic: str = "/anymal/state_estimator/anymal_state") -> list[str] | None:
     """Return the first non-empty joint name sequence from anymal_state, else None."""
@@ -424,15 +418,8 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
     tall: list[dict] = []
     conns = [c for c in reader.connections if c.topic == topic]
 
-    # Light debug state
-    dbg_missing = 0
-    dbg_names: set[str] = set()
-    dbg_first_msg = True
-
     # Fallback joint order from anymal_state (if present)
     fallback_names = _probe_anymal_joint_order(reader, "/anymal/state_estimator/anymal_state")
-    if fallback_names:
-        print(f"[tau dbg] using fallback joint order from anymal_state (len={len(fallback_names)})")
 
     for conn, t_log, raw in reader.messages(connections=conns):
         try:
@@ -443,12 +430,6 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
         readings = getattr(msg, "readings", None)
         if not readings:
             continue
-
-        if dbg_first_msg:
-            rl = len(readings) if readings is not None else 0
-            fl = len(fallback_names) if fallback_names is not None else None
-            print(f"[tau dbg] first message: len(readings)={rl} len(fallback_names)={fl}")
-            dbg_first_msg = False
 
         ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
         t = float(ns) * 1e-9
@@ -465,28 +446,12 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
             st_tau = getattr(st, "joint_torque", None) if st is not None else None
             cm_tau = getattr(cm, "joint_torque", None) if cm is not None else None
 
-            if not st_name and not cm_name and dbg_missing < 8:
-                st_hdr = getattr(st, "header", None)
-                cm_hdr = getattr(cm, "header", None)
-                st_fid = getattr(st_hdr, "frame_id", None) if st_hdr is not None else None
-                cm_fid = getattr(cm_hdr, "frame_id", None) if cm_hdr is not None else None
-                print(
-                    f"[tau dbg] t={t:.3f} missing names; "
-                    f"st_tau={st_tau} cm_tau={cm_tau} "
-                    f"st_fid={repr(st_fid)} cm_fid={repr(cm_fid)}"
-                )
-                dbg_missing += 1
-
             # Prefer explicit names; fallback to index-based mapping from anymal_state
             name = st_name or cm_name
             if not name and fallback_names and i < len(fallback_names):
                 name = fallback_names[i]
 
             tau = st_tau if st_tau is not None else cm_tau
-
-            if name and name not in dbg_names and len(dbg_names) < 8:
-                print(f"[tau dbg] sample non-empty name: {repr(name)}")
-                dbg_names.add(name)
 
             if not name or tau is None:
                 continue
@@ -500,17 +465,10 @@ def extract_actuator_readings_tau(reader: AnyReader, topic: str) -> pd.DataFrame
         return pd.DataFrame(columns=["t"])
 
     df = pd.DataFrame(tall)
-    # Pre-pivot summary and cleanup
-    blanks = int((df["joint"].astype(str).str.len() == 0).sum())
-    uniq = sorted(df["joint"].astype(str).str.strip().unique().tolist())[:12]
-    print(f"[tau dbg] tall rows={len(df)} blanks={blanks} unique_names_sample={uniq}")
     df = df[df["joint"].astype(str).str.len() > 0]
 
     tau_w = df.pivot_table(index="t", columns="joint", values="tau", aggfunc="last")
     tau_w.columns = [f"tau_{c}" for c in tau_w.columns]
-    cols = list(tau_w.columns)
-    empties = [c for c in cols if c == "tau_"]
-    print(f"[tau dbg] tau_w columns sample={cols[:12]} total={len(cols)} empty_suffix={empties}")
 
     wide = tau_w.sort_index().reset_index()
     wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
@@ -522,7 +480,7 @@ def main():
     ap = argparse.ArgumentParser(description="Extract key topics from mission rosbags to Parquet.")
     add_mission_arguments(ap)
     ap.add_argument("--topics-cfg", default=str(repo_root() / "config" / "topics.yaml"),
-                    help="Optional topics override YAML (explicit topic names).")
+                    help="Topics mapping YAML (explicit topic names).")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing Parquet files.")
     args = ap.parse_args()
 
