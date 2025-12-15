@@ -48,7 +48,10 @@
     "SNOW-3": "ee14fd01-73f1-498b-8b64-a427257ea577",
     "SPX-2": "57b64279-18a3-451b-a516-51c1ea9c7e9a",
     "SPX-3": "c31cdc28-cb10-4eff-adec-53b0069eacac",
-    "TRIM-1": "b686ebd4-da47-4e49-ab20-c5504049f4b8"
+    "TRIM-1": "b686ebd4-da47-4e49-ab20-c5504049f4b8",
+    "SRB-3": "bb499317-4230-4780-b536-49b7ca789e61",
+    "SRB-1": "2701e5bb-9b52-41d0-a695-e5b81cda6373",
+    "SRB-2": "6eab8f63-0582-4e05-a26a-c9df0a18f0ac"
   },
   "e97e35ad-dd7b-49c4-a158-95aba246520e": {
     "folder": "e97e35ad",
@@ -245,5 +248,17 @@
   "b686ebd4-da47-4e49-ab20-c5504049f4b8": {
     "folder": "b686ebd4",
     "name": "TRIM-1"
+  },
+  "bb499317-4230-4780-b536-49b7ca789e61": {
+    "folder": "bb499317",
+    "name": "SRB-3"
+  },
+  "2701e5bb-9b52-41d0-a695-e5b81cda6373": {
+    "folder": "2701e5bb",
+    "name": "SRB-1"
+  },
+  "6eab8f63-0582-4e05-a26a-c9df0a18f0ac": {
+    "folder": "6eab8f63",
+    "name": "SRB-2"
   }
 }

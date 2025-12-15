@@ -26,7 +26,7 @@ import yaml
 
 # --- paths helper ---
 from utils.paths import get_paths
-from utils.missions import missions_json_path, load_missions_file, upsert_mission_entry
+from utils.missions import missions_json_path, load_missions_file, upsert_mission_entry, pick_folder_name
 
 P = get_paths()  # expects keys RAW, REPO_ROOT, (optionally) MISSIONS_JSON
 
@@ -90,32 +90,15 @@ def short_folder_from_uuid(mission_id: str, dest_root: Path) -> tuple[str, Path]
     """
     cur = _read_missions_json()
 
-    # 1) If mission already known, reuse recorded folder
+    folder_name = pick_folder_name(mission_id, cur)
+
     existing = cur.get(mission_id, {})
-    if "folder" in existing and existing["folder"]:
-        folder_name = existing["folder"]
+    if isinstance(existing, dict) and existing.get("folder"):
         print(f"[info] Mission already exists; updating folders at '{folder_name}'.")
-        return folder_name, dest_root / folder_name
+    elif folder_name != mission_id.split("-")[0]:
+        print(f"[info] Short folder '{mission_id.split('-')[0]}' is already used by another mission; using full id.")
 
-    # 2) Propose short prefix
-    short = mission_id.split("-")[0]
-
-    # Is this short name claimed by a *different* mission in missions.json? unlikely
-    claimed_by_other = False
-    for mid, entry in cur.items():
-        if mid == "_aliases":
-            continue
-        if isinstance(entry, dict) and entry.get("folder") == short and mid != mission_id:
-            claimed_by_other = True
-            break
-
-    if claimed_by_other:
-        # Real collision: fall back to full UUID
-        print(f"[info] Short folder '{short}' is already used by another mission; using full id.")
-        return mission_id, dest_root / mission_id
-
-    # Otherwise we can safely use the short folder (even if it already exists on disk)
-    return short, dest_root / short
+    return folder_name, dest_root / folder_name
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
     print("[cmd]", " ".join(shlex.quote(c) for c in cmd))
@@ -235,7 +218,6 @@ def main():
             print("[info] Probing for GPS bags first…")
             download_selected(args.mission_id, dest_dir, gps_patterns, dry=False)
         else:
-            # Shouldn't happen with your defaults, but keep behavior sane.
             print("[warn] No GPS patterns in configuration; cannot probe before full download.", file=sys.stderr)
 
         if len(_gps_files_in_dir(dest_dir)) == 0:

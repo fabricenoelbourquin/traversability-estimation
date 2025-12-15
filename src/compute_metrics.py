@@ -16,13 +16,12 @@ python src/compute_metrics.py --mission ETH-1 \
 
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json
+import argparse
 from pathlib import Path
 import yaml, pandas as pd
 
 # paths helper
 from utils.paths import get_paths
-from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 

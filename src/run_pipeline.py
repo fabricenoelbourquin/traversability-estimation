@@ -173,7 +173,7 @@ def main():
     P = get_paths()
 
     # Find the mission folder in RAW to scan/delete bad bags if needed
-    mp = resolve_mission(args.mission_id, P)
+    mp = resolve_mission(args.mission_id, P, mission_name=mission_name, allow_new=True)
     raw_dir, tables_dir, display_name = mp.raw, mp.tables, mp.display
 
 
