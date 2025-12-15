@@ -141,6 +141,8 @@ def main():
     with cfg_path.open("r") as f:
         cfg = yaml.safe_load(f) or {}
     bags_cfg = (cfg.get("bags") or {})
+    gps_cfg = (cfg.get("gps") or {})
+    gps_required = yes(gps_cfg.get("required", True))
     bag_extras_cfg = _parse_bag_extras(bags_cfg)
     dataset_cfg = (cfg.get("dataset") or {})
     dataset_config_path = Path(args.dataset_config or dataset_cfg.get("config") or "config/dataset.yaml")
@@ -158,6 +160,8 @@ def main():
             cmd += ["--mission-name", mission_name]
         for ex in bag_extras:
             cmd += ["--extra", ex]
+        if not gps_required:
+            cmd.append("--no-require-gps")
         return cmd
     
     # ID required (from CLI or YAML)
@@ -192,6 +196,7 @@ def main():
     skip_dem_slope = args.skip_dem_slope or metrics_only
     skip_dataset  = args.skip_dataset or metrics_only or not dataset_enabled
     py = sys.executable
+    gps_available = True
 
     # 1) Download (this script accepts id + name together)
     if not skip_download:
@@ -258,18 +263,29 @@ def main():
 
     # Early GPS check after extraction (skip if gps.parquet missing/empty)    
     gps_parquet = tables_dir / "gps.parquet"
+    gps_issue = ""
     if not gps_parquet.exists():
-        print(f"[skip] {display_name}: GPS table missing after extraction; skipping mission.")
-        sys.exit(20)
-    try:
-        import pandas as _pd
-        if _pd.read_parquet(gps_parquet).empty:
-            print(f"[skip] {display_name}: GPS table is empty; skipping mission.")
+        gps_available = False
+        gps_issue = "GPS table missing after extraction"
+    else:
+        try:
+            import pandas as _pd
+            if _pd.read_parquet(gps_parquet).empty:
+                gps_available = False
+                gps_issue = "GPS table is empty"
+        except Exception as _e:
+            # If we can’t read it, treat as missing
+            gps_available = False
+            gps_issue = f"GPS table unreadable ({_e})"
+
+    if not gps_available:
+        if gps_required:
+            print(f"[skip] {display_name}: {gps_issue}; skipping mission.")
             sys.exit(20)
-    except Exception as _e:
-        # If we can’t read it, treat as missing
-        print(f"[skip] {display_name}: GPS table unreadable ({_e}); skipping mission.")
-        sys.exit(20)
+        print(f"[warn] {display_name}: {gps_issue}; continuing without GPS (map/DEM/cluster steps will be skipped).")
+        skip_swissimg = True
+        skip_cluster = True
+        skip_dem_slope = True
 
     # 3) Sync streams
     if not skip_sync:
@@ -301,6 +317,8 @@ def main():
     # 8) Dataset export (patch-level HDF5)
     if not skip_dataset:
         cmd = [py, "src/build_patch_dataset.py", *ident_either(), "--config", str(dataset_config_path)]
+        if not gps_available:
+            cmd += ["--allow-missing-gps", "--allow-missing-dem"]
         sh(cmd)
     else:
         reasons = []
@@ -336,7 +354,7 @@ def main():
             print(">> Timeseries plot disabled in config.")
 
         map_cfg = (vis.get("map") or {})
-        if yes(map_cfg.get("enabled", True)):
+        if gps_available and yes(map_cfg.get("enabled", True)):
             cmd = [py, "src/visualization/plot_on_map.py", *ident_either()]
             bg = map_cfg.get("background", "both")
             if bg:
@@ -344,28 +362,34 @@ def main():
             if yes(map_cfg.get("emb_both", False)):
                 cmd.append("--emb-both")
             sh(cmd)
+        elif not gps_available and yes(map_cfg.get("enabled", True)):
+            print(">> Map plot requires GPS; skipping.")
         else:
             print(">> Map plot disabled in config.")
 
         # --- DEM 3D plot
         dem3d_cfg = (vis.get("dem3d") or {})
-        if yes(dem3d_cfg.get("enabled", True)):
+        if gps_available and not skip_dem_slope and yes(dem3d_cfg.get("enabled", True)):
             cmd = [py, "src/visualization/plot_dem_3d.py", *ident_either()]
             # Default true; pass the flag when true (harmless if script also defaults to true)
             if yes(dem3d_cfg.get("plot_trajectory", True)):
                 cmd.append("--plot-trajectory")
             sh(cmd)
+        elif not gps_available and yes(dem3d_cfg.get("enabled", True)):
+            print(">> DEM 3D plot requires GPS/DEM; skipping.")
         else:
             print(">> DEM 3D plot disabled in config.")
 
         # --- Compare DEM vs quat pitch/roll
         cmp_cfg = (vis.get("compare_dem_vs_quat_pitch_roll") or {})
-        if yes(cmp_cfg.get("enabled", True)):
+        if gps_available and not skip_dem_slope and yes(cmp_cfg.get("enabled", True)):
             cmd = [py, "src/visualization/compare_dem_vs_quat_pitch_roll.py", *ident_either()]
             smooth_win = int(cmp_cfg.get("smooth_win", 1) or 1)
             if smooth_win != 1:
                 cmd += ["--smooth-win", str(smooth_win)]
             sh(cmd)
+        elif not gps_available and yes(cmp_cfg.get("enabled", True)):
+            print(">> DEM vs quat pitch/roll comparison requires GPS/DEM; skipping.")
         else:
             print(">> DEM vs quat pitch/roll comparison disabled in config.")
 
@@ -382,7 +406,7 @@ def main():
             # overlay-pitch: default True -> add flag if True
             if yes(vmv_cfg.get("overlay_pitch", True)):
                 cmd.append("--overlay-pitch")
-            if yes(vmv_cfg.get("shade_clusters", False)):
+            if yes(vmv_cfg.get("shade_clusters", False)) and not skip_cluster:
                 cmd.append("--shade-clusters")
             sh(cmd)
         else:
@@ -394,7 +418,7 @@ def main():
             cmd = [py, "src/visualization/video_metric_dual_viewer.py", *ident_either()]
             if yes(vmd_cfg.get("overlay_pitch", True)):
                 cmd.append("--overlay-pitch")
-            if yes(vmd_cfg.get("shade_clusters", False)):
+            if yes(vmd_cfg.get("shade_clusters", False)) and not skip_cluster:
                 cmd.append("--shade-clusters")
             if yes(vmd_cfg.get("add_depth_cam", False)):
                 cmd.append("--add-depth-cam")
@@ -404,9 +428,11 @@ def main():
 
         # video_dem_vs_quat_pitch_roll
         vdq_cfg = (vids_cfg.get("dem_vs_quat_pitch_roll") or {})
-        if yes(vdq_cfg.get("enabled", False)):  # default off
+        if gps_available and not skip_dem_slope and yes(vdq_cfg.get("enabled", False)):  # default off
             cmd = [py, "src/visualization/video_dem_vs_quat_pitch_roll.py", *ident_either()]
             sh(cmd)
+        elif not gps_available and yes(vdq_cfg.get("enabled", False)):
+            print(">> Video (dem_vs_quat_pitch_roll) requires GPS/DEM; skipping.")
         else:
             print(">> Video (dem_vs_quat_pitch_roll) disabled in config.")
     else:

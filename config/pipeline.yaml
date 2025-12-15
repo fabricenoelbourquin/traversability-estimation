@@ -3,6 +3,9 @@ bags:
   camera: false
   depth: false
 
+gps:
+  required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
+
 dataset:
   enabled: true
   config: "config/dataset.yaml"
