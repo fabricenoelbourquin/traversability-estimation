@@ -22,22 +22,14 @@ from __future__ import annotations
 import argparse, json, os, re, shlex, subprocess, sys
 from pathlib import Path
 from argparse import BooleanOptionalAction
+import yaml
 
 # --- paths helper ---
 from utils.paths import get_paths
 from utils.missions import missions_json_path, load_missions_file, upsert_mission_entry
 
-# Try to import YAML (PyYAML). If unavailable we'll use hardcoded fallbacks.
-try:
-    import yaml  # type: ignore
-except ImportError:  # hard-fail since YAML is required now
-    print("[error] PyYAML not installed. Please `pip install pyyaml`.", file=sys.stderr)
-    sys.exit(2)
-
-
 P = get_paths()  # expects keys RAW, REPO_ROOT, (optionally) MISSIONS_JSON
 
-BAG_SUFFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_(.+)\.bag$")
 EXIT_NO_GPS = 20
 
 def repo_root() -> Path:
@@ -58,7 +50,7 @@ def _read_rosbags_yaml() -> dict:
     Load rosbags.yaml safely.
     Returns dict with keys:
       - defaults: List[str]
-      - extras: Dict[str, str]  (alias -> bare suffix, e.g. "dlio" -> "dlio")
+      - extras: Dict[str, str]  (alias -> pattern/suffix, e.g. "camera" -> "hdr_front"), additional bags to download
     or None if file missing/unreadable/pyyaml unavailable.
     """
     path = rosbags_yaml_path()
@@ -98,7 +90,7 @@ def short_folder_from_uuid(mission_id: str, dest_root: Path) -> tuple[str, Path]
     """
     cur = _read_missions_json()
 
-    # 1) If mission already known, reuse recorded folder (stable behavior)
+    # 1) If mission already known, reuse recorded folder
     existing = cur.get(mission_id, {})
     if "folder" in existing and existing["folder"]:
         folder_name = existing["folder"]
@@ -108,7 +100,7 @@ def short_folder_from_uuid(mission_id: str, dest_root: Path) -> tuple[str, Path]
     # 2) Propose short prefix
     short = mission_id.split("-")[0]
 
-    # Is this short name claimed by a *different* mission in missions.json?
+    # Is this short name claimed by a *different* mission in missions.json? unlikely
     claimed_by_other = False
     for mid, entry in cur.items():
         if mid == "_aliases":

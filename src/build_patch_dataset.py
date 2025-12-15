@@ -751,6 +751,8 @@ def main():
     ap.add_argument("--stride-m", type=float, default=None, help="Override stride (meters)")
     ap.add_argument("--out", type=str, default=None, help="Optional output HDF5 path")
     ap.add_argument("--dem", type=str, default=None, help="Optional DEM override (GeoTIFF)")
+    ap.add_argument("--allow-missing-gps", action="store_true", help="Proceed without lat/lon (geo fields become NaN).")
+    ap.add_argument("--allow-missing-dem", action="store_true", help="Proceed without DEM (height/gradient fields become NaN).")
     args = ap.parse_args()
 
     cfg = load_yaml(Path(args.config))
@@ -760,6 +762,8 @@ def main():
     output_cfg = cfg.get("output", {})
     swiss_cfg = cfg.get("swissimage", {})
     selection_cfg = cfg.get("selection", {})
+    allow_missing_gps = bool(args.allow_missing_gps)
+    allow_missing_dem = bool(args.allow_missing_dem)
 
     patch_size_m = float(args.patch_size_m or patch_cfg.get("size_m", 5.0))
     overlap = args.overlap if args.overlap is not None else float(patch_cfg.get("overlap_ratio", 0.5))
@@ -809,17 +813,30 @@ def main():
     include_cmd = bool(metrics_cfg.get("include_command_speed", True))
 
     # DEM
-    dem_path = discover_dem_path(mp.maps, bool(input_cfg.get("prefer_dem_from_meta", True)), args.dem or input_cfg.get("dem_path"))
-    print(f"[load] DEM: {dem_path}")
-    with rasterio.open(dem_path) as ds:
-        z = ds.read(1).astype(np.float64)
-        nodata = ds.nodata
-        if nodata is not None:
-            z[z == nodata] = np.nan
-        transform = ds.transform
-        dem_crs = ds.crs
-
-    res_m = float(abs(transform.a))
+    dem_path = None
+    dem_crs = None
+    transform = None
+    z = None
+    res_m = float("nan")
+    try:
+        dem_path = discover_dem_path(
+            mp.maps,
+            bool(input_cfg.get("prefer_dem_from_meta", True)),
+            args.dem or input_cfg.get("dem_path"),
+        )
+        print(f"[load] DEM: {dem_path}")
+        with rasterio.open(dem_path) as ds:
+            z = ds.read(1).astype(np.float64)
+            nodata = ds.nodata
+            if nodata is not None:
+                z[z == nodata] = np.nan
+            transform = ds.transform
+            dem_crs = ds.crs
+        res_m = float(abs(transform.a))
+    except Exception as e:
+        if not allow_missing_dem:
+            raise
+        print(f"[warn] DEM unavailable or unreadable ({e}); proceeding without DEM features.")
 
     # Optional time ranges per mission (interpreted as seconds since start of mission)
     mission_keys = [args.mission, args.mission_id, mp.display, mp.mission_id]
@@ -833,13 +850,31 @@ def main():
     df["t_rel_raw"] = df["t"] - float(df["t"].min()) + (time_ranges[0][0] if time_ranges else 0.0)
 
     # lat/lon -> E/N (after time filtering)
-    lat_col, lon_col = find_lat_lon_cols(df)
-    lat = df[lat_col].to_numpy(dtype=float)
-    lon = df[lon_col].to_numpy(dtype=float)
-    transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
-    east, north = transformer.transform(lon, lat)
-    df["easting_m"] = east
-    df["northing_m"] = north
+    lat_col = lon_col = None
+    try:
+        lat_col, lon_col = find_lat_lon_cols(df)
+    except KeyError as e:
+        if allow_missing_gps:
+            print(f"[warn] No lat/lon columns found ({e}); continuing without GPS coordinates.")
+        else:
+            raise
+
+    if dem_crs is not None and lat_col and lon_col:
+        lat = df[lat_col].to_numpy(dtype=float)
+        lon = df[lon_col].to_numpy(dtype=float)
+        transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
+        east, north = transformer.transform(lon, lat)
+        df["easting_m"] = east
+        df["northing_m"] = north
+    else:
+        lat = df[lat_col].to_numpy(dtype=float) if lat_col else np.full(len(df), np.nan)
+        lon = df[lon_col].to_numpy(dtype=float) if lon_col else np.full(len(df), np.nan)
+
+    coord_e_col = coord_n_col = None
+    if {"easting_m", "northing_m"}.issubset(df.columns):
+        coord_e_col, coord_n_col = "easting_m", "northing_m"
+    elif {"x", "y"}.issubset(df.columns):
+        coord_e_col, coord_n_col = "x", "y"
     # Build segments (stride restarts per range) using the filtered df with coordinates
     if time_ranges:
         segments = []
@@ -850,8 +885,9 @@ def main():
     else:
         segments = [df]
 
-    half_px = max(1, int(round((patch_size_m / 2.0) / res_m)))
-    H, W = z.shape
+    dem_available = z is not None and transform is not None
+    half_px = max(1, int(round((patch_size_m / 2.0) / res_m))) if dem_available else None
+    H, W = z.shape if dem_available else (0, 0)
 
     rows = []
     skipped_edges = 0
@@ -864,14 +900,18 @@ def main():
     for seg in segments:
         if seg.empty:
             continue
-        east_seg = seg["easting_m"].to_numpy(dtype=float)
-        north_seg = seg["northing_m"].to_numpy(dtype=float)
-        lat_seg = seg[lat_col].to_numpy(dtype=float)
-        lon_seg = seg[lon_col].to_numpy(dtype=float)
+        east_seg = seg[coord_e_col].to_numpy(dtype=float) if coord_e_col else np.full(len(seg), np.nan)
+        north_seg = seg[coord_n_col].to_numpy(dtype=float) if coord_n_col else np.full(len(seg), np.nan)
+        lat_seg = seg[lat_col].to_numpy(dtype=float) if lat_col else np.full(len(seg), np.nan)
+        lon_seg = seg[lon_col].to_numpy(dtype=float) if lon_col else np.full(len(seg), np.nan)
         t_seg = seg["t"].to_numpy(dtype=float)
         distances = seg["dist_m"].to_numpy(dtype=float) if "dist_m" in seg else np.full(len(seg), np.nan)
 
-        valid_mask = np.isfinite(east_seg) & np.isfinite(north_seg) & np.isfinite(distances)
+        valid_mask = np.isfinite(distances)
+        if coord_e_col:
+            valid_mask &= np.isfinite(east_seg)
+        if coord_n_col:
+            valid_mask &= np.isfinite(north_seg)
         if not valid_mask.any():
             continue
 
@@ -884,57 +924,85 @@ def main():
             continue
 
         for ci in centers:
-            cx_e = east_seg[ci]; cy_n = north_seg[ci]
-            cx_lat = lat_seg[ci]; cx_lon = lon_seg[ci]
-            row_c, col_c = world_to_rowcol(transform, np.array([cx_e]), np.array([cy_n]))
-            r = int(round(row_c[0])); c = int(round(col_c[0]))
-            r0 = r - half_px; r1 = r + half_px + 1
-            c0 = c - half_px; c1 = c + half_px + 1
-            # ensure patch fully inside DEM
-            if (r0 < 0 or c0 < 0 or r1 > H or c1 > W):
-                skipped_edges += 1
-                continue
+            cx_e = float(east_seg[ci]) if np.isfinite(east_seg[ci]) else float("nan")
+            cy_n = float(north_seg[ci]) if np.isfinite(north_seg[ci]) else float("nan")
+            cx_lat = float(lat_seg[ci]) if np.isfinite(lat_seg[ci]) else float("nan")
+            cx_lon = float(lon_seg[ci]) if np.isfinite(lon_seg[ci]) else float("nan")
 
-            rows_grid = np.arange(r0, r1)
-            cols_grid = np.arange(c0, c1)
-            rr_abs, cc_abs = np.meshgrid(rows_grid, cols_grid, indexing="ij")
-            z_patch = z[r0:r1, c0:c1]
-
-            valid_cells = np.isfinite(z_patch)
-            valid_frac = float(valid_cells.mean()) if valid_cells.size else 0.0
-            if valid_frac < min_height_frac:
-                skipped_height += 1
-                continue
-
-            # Fit a single plane over the patch to estimate east/north slopes.
-            slope_e, slope_n = fit_plane_to_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
-            slope_mag = math.hypot(slope_e, slope_n)
-            grad_orient = float(math.atan2(slope_n, slope_e)) if np.isfinite(slope_e) and np.isfinite(slope_n) else float("nan")
-            in_patch = (
-                (np.abs(east_seg - cx_e) <= (patch_size_m / 2.0)) &
-                (np.abs(north_seg - cy_n) <= (patch_size_m / 2.0)) &
-                np.isfinite(east_seg) & np.isfinite(north_seg)
-            )
-            df_patch = seg.loc[in_patch].copy()
-            if len(df_patch) < min_robot_samples:
-                skipped_robot += 1
-                continue
-
-            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
-            min_dist_m = float(patch_size_m * 0.9)  # allow small slack; need ~90% of patch size traveled
-            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
-                skipped_robot += 1
-                continue
-            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
-            min_dist_m = float(patch_size_m * 0.9)  # allow small slack; need ~90% of patch size traveled
-            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
-                skipped_robot += 1
-                continue
-
-            quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
+            slope_e = slope_n = slope_mag = grad_orient = float("nan")
             k1 = k2 = mean_curv = abs_curv = float("nan")
             curv_heading = curv_cross = float("nan")
             yaw_rad = float("nan")
+            height_valid_frac = float("nan")
+            side_m = patch_size_m
+            quad_coeffs = None
+            df_patch = None
+
+            if dem_available and coord_e_col and coord_n_col and half_px is not None:
+                row_c, col_c = world_to_rowcol(transform, np.array([cx_e]), np.array([cy_n]))
+                r = int(round(row_c[0])); c = int(round(col_c[0]))
+                r0 = r - half_px; r1 = r + half_px + 1
+                c0 = c - half_px; c1 = c + half_px + 1
+                if (r0 < 0 or c0 < 0 or r1 > H or c1 > W):
+                    skipped_edges += 1
+                    continue
+
+                rows_grid = np.arange(r0, r1)
+                cols_grid = np.arange(c0, c1)
+                rr_abs, cc_abs = np.meshgrid(rows_grid, cols_grid, indexing="ij")
+                z_patch = z[r0:r1, c0:c1]
+
+                valid_cells = np.isfinite(z_patch)
+                valid_frac = float(valid_cells.mean()) if valid_cells.size else 0.0
+                height_valid_frac = valid_frac
+                if valid_frac < min_height_frac:
+                    skipped_height += 1
+                    continue
+
+                slope_e, slope_n = fit_plane_to_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
+                slope_mag = math.hypot(slope_e, slope_n)
+                grad_orient = float(math.atan2(slope_n, slope_e)) if np.isfinite(slope_e) and np.isfinite(slope_n) else float("nan")
+                in_patch = (
+                    (np.abs(east_seg - cx_e) <= (patch_size_m / 2.0)) &
+                    (np.abs(north_seg - cy_n) <= (patch_size_m / 2.0)) &
+                    np.isfinite(east_seg) & np.isfinite(north_seg)
+                )
+                df_patch = seg.loc[in_patch].copy()
+                side_m = len(rows_grid) * res_m
+                quad_coeffs = fit_quadratic_patch(z_patch, rr_abs, cc_abs, r, c, transform.a, transform.e)
+            else:
+                if coord_e_col and coord_n_col:
+                    in_patch = (
+                        (np.abs(east_seg - cx_e) <= (patch_size_m / 2.0)) &
+                        (np.abs(north_seg - cy_n) <= (patch_size_m / 2.0))
+                    )
+                    in_patch &= np.isfinite(east_seg) & np.isfinite(north_seg)
+                else:
+                    center_dist = distances_adj[ci] if np.isfinite(distances_adj[ci]) else distances[ci]
+                    in_patch = (
+                        np.isfinite(distances_adj) &
+                        np.isfinite(center_dist) &
+                        (np.abs(distances_adj - center_dist) <= (patch_size_m / 2.0))
+                    )
+                df_patch = seg.loc[in_patch].copy()
+
+            if df_patch is None or len(df_patch) < min_robot_samples:
+                skipped_robot += 1
+                continue
+
+            robot_feats = aggregate_robot_patch(df_patch, metric_names, include_speed, include_cmd, cot_cfg if include_cmd else None)
+            min_dist_m = float(patch_size_m * 0.9)  # allow small slack; need ~90% of patch size traveled
+            if np.isfinite(robot_feats.get("distance_traveled_m", np.nan)) and robot_feats["distance_traveled_m"] < min_dist_m:
+                skipped_robot += 1
+                continue
+
+            yaw_rad = yaw_from_quaternion(
+                robot_feats.get("bearing_qw", np.nan),
+                robot_feats.get("bearing_qx", np.nan),
+                robot_feats.get("bearing_qy", np.nan),
+                robot_feats.get("bearing_qz", np.nan),
+            )
+
             if quad_coeffs is not None:
                 a2, b2, c2, d2, e2, _ = quad_coeffs
                 grad_sq = d2 * d2 + e2 * e2
@@ -962,8 +1030,6 @@ def main():
                     F = d2 * e2
                     G = 1.0 + e2 * e2
 
-                    yaw_rad = yaw_from_quaternion(robot_feats["bearing_qw"], robot_feats["bearing_qx"],
-                                                  robot_feats["bearing_qy"], robot_feats["bearing_qz"])
                     if np.isfinite(yaw_rad):
                         u = math.cos(yaw_rad); v = math.sin(yaw_rad)
                         denom_dir = E * u * u + 2.0 * F * u * v + G * v * v
@@ -974,7 +1040,6 @@ def main():
                         if denom_perp != 0.0 and np.isfinite(denom_perp):
                             curv_cross = (L * u_perp * u_perp + 2.0 * M * u_perp * v_perp + N * v_perp * v_perp) / denom_perp
 
-            side_m = len(rows_grid) * res_m
             row = {
                 "patch_index": patch_idx,
                 "patch_size_m": patch_size_m,
@@ -985,7 +1050,7 @@ def main():
                 "center_lon": float(cx_lon),
                 "center_e": float(cx_e),
                 "center_n": float(cy_n),
-                "height_valid_fraction": valid_frac,
+                "height_valid_fraction": float(height_valid_frac),
                 "slope_e": float(slope_e),
                 "slope_n": float(slope_n),
                 "slope_mag": float(slope_mag),
@@ -1085,7 +1150,7 @@ def main():
         "min_height_valid_frac": min_height_frac,
         "min_robot_samples": min_robot_samples,
         "hz": float(hz_used) if hz_used is not None else float("nan"),
-        "dem_path": str(dem_path),
+        "dem_path": str(dem_path) if dem_path else "",
         "include_dino_embeddings": include_dino,
         "time_ranges_s": json.dumps(time_ranges) if time_ranges else "",
         "config_path": str(Path(args.config).resolve()),
