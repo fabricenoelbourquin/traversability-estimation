@@ -1,4 +1,5 @@
 # config/rosbags.yaml
+# Note: patterns list *.bag filenames; scripts auto-extend these to also match .mcap.
 defaults:
   - "*_anymal_command.bag"
   - "*_anymal_state.bag"

@@ -29,9 +29,10 @@ from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.ros_time import message_time_ns
-from utils.rosbag_tools import filter_valid_rosbags
+from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
+from utils.topics import load_topic_candidates
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -45,24 +46,37 @@ def pick_synced_metrics(synced_dir: Path, hz: int | None) -> Path:
     """Return metrics parquet, preferring *_metrics.parquet and falling back to plain."""
     return resolve_synced_parquet(synced_dir, hz, prefer_metrics=True)
 
-def find_camera_bag(raw_dir: Path, pattern: str, topic: str) -> Path:
-    matches = sorted(raw_dir.glob(pattern))
-    matches = filter_valid_rosbags(matches)
+def find_camera_bag(raw_dir: Path, pattern: str, topics: list[str] | str) -> tuple[Path, str]:
+    candidates = [topics] if isinstance(topics, str) else list(topics)
+    candidates = [c for c in candidates if c]
+    patterns = expand_bag_patterns(pattern)
+    matches: list[Path] = []
+    for pat in patterns:
+        matches.extend(sorted(raw_dir.glob(pat)))
+    # deduplicate while preserving order
+    seen: set[Path] = set()
+    unique_matches = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique_matches.append(m)
+
+    matches = filter_valid_rosbags(unique_matches)
     tried: list[str] = []
     for p in matches:
         try:
             with AnyReader([p]) as r:
                 topics = {c.topic for c in r.connections}
-            if topic in topics:
-                return p
-            # auto-fallback to /compressed if user asked for /image_raw
-            if topic.endswith("/image_raw") and topic + "/compressed" in topics:
-                return p
+            for cand in candidates:
+                if cand in topics:
+                    return p, cand
+                if cand.endswith("/image_raw") and cand + "/compressed" in topics:
+                    return p, cand + "/compressed"
             tried.append(f"{p.name}: {sorted(topics)}")
         except UnicodeDecodeError:
             tried.append(f"{p.name}: <cannot open>")
     raise FileNotFoundError(
-        f"Could not find bag in {raw_dir} matching {pattern!r} that has topic {topic!r}.\n"
+        f"Could not find bag in {raw_dir} matching any of {patterns!r} that has topics {candidates!r}.\n"
         "Tried:\n" + "\n".join(tried)
     )
 
@@ -226,7 +240,7 @@ def main():
     add_mission_arguments(ap)
     add_hz_argument(ap)
     ap.add_argument("--metric", default="power_mech")
-    ap.add_argument("--camera-pattern", default="*_hdr_front.bag")
+    ap.add_argument("--camera-pattern", default="*_hdr_front*.bag")
     ap.add_argument("--camera-topic", default="/boxi/hdr/front/image_raw/compressed")
     ap.add_argument("--out", help="Output video path, e.g. /tmp/out.mp4")
     ap.add_argument("--fps", type=float, default=30.0)
@@ -278,6 +292,21 @@ def main():
     out_base.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else (out_base / f"{display_name}_metric_visual_camera.mp4")
 
+    default_camera_topics = load_topic_candidates(
+        "camera_front",
+        [
+            "/boxi/hdr/front/image_raw/compressed",
+            "/gt_box/hdr_front/image_raw/compressed",
+        ],
+    )
+    if args.camera_topic:
+        camera_topics: list[str] = []
+        for t in [args.camera_topic] + default_camera_topics:
+            if t and t not in camera_topics:
+                camera_topics.append(t)
+    else:
+        camera_topics = default_camera_topics
+
     # 1) metrics (+ quaternions if available)
     metrics_path = resolve_synced_parquet(synced_dir, args.hz, prefer_metrics=True)
     df = pd.read_parquet(metrics_path)
@@ -323,13 +352,13 @@ def main():
                 print("[warn] --overlay-pitch requested, but pitch cannot be computed. Proceeding without overlay.")
 
     # 2) camera bag
-    cam_bag = find_camera_bag(raw_dir, args.camera_pattern, args.camera_topic)
+    cam_bag, camera_topic = find_camera_bag(raw_dir, args.camera_pattern, camera_topics)
     with AnyReader([cam_bag]) as reader:
         # choose camera topic connection(s)
-        conns = [c for c in reader.connections if c.topic == args.camera_topic or c.topic == args.camera_topic + "/compressed"]
+        conns = [c for c in reader.connections if c.topic == camera_topic or c.topic == camera_topic + "/compressed"]
         if not conns:
             avail = {c.topic for c in reader.connections}
-            raise KeyError(f"Topic {args.camera_topic!r} not in {cam_bag.name}. Available: {sorted(avail)}")
+            raise KeyError(f"Topic {camera_topic!r} not in {cam_bag.name}. Available: {sorted(avail)}")
 
         msg_iter = reader.messages(connections=conns)
 
@@ -337,7 +366,7 @@ def main():
         try:
             conn0, ts0, raw0 = next(msg_iter)
         except StopIteration:
-            raise RuntimeError(f"No messages on topic {args.camera_topic!r} in {cam_bag}")
+            raise RuntimeError(f"No messages on topic {camera_topic!r} in {cam_bag}")
 
         msg0 = reader.deserialize(raw0, conn0.msgtype)
         if "CompressedImage" in conn0.msgtype:
