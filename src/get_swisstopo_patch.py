@@ -41,7 +41,6 @@ from affine import Affine
 
 # ---- paths helper (your existing one) ----
 from utils.paths import get_paths
-from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet
 

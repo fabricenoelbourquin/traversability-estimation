@@ -26,7 +26,6 @@ import pandas as pd
 import yaml
 
 from utils.paths import get_paths
-from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, resolve_mission_from_args
 from utils.ros_time import header_stamp_ns, message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
@@ -37,6 +36,7 @@ from rosbags.highlevel import AnyReader
 
 # Topics we expect to extract; set explicitly in config/topics.yaml
 REQUIRED_TOPICS = ("cmd_vel", "odom", "gps", "imu")
+SUPPORTED_BAG_SUFFIXES = (".bag", ".mcap")
 
 def _norm_list(val) -> list[str]:
     if val is None:
@@ -72,6 +72,39 @@ def _available_topics_summary(conns, limit: int = 30) -> str:
     if len(pairs) > limit:
         lines.append(f"  ... {len(pairs) - limit} more")
     return "\n".join(lines) if lines else "  (no topics found)"
+
+def _expand_bag_patterns(patterns: list[str]) -> list[str]:
+    """Add .mcap variants for any .bag pattern and allow numbered splits."""
+    expanded: list[str] = []
+    for pat in patterns:
+        expanded.append(pat)
+        if pat.endswith(".bag") and not pat.endswith("*.bag"):
+            expanded.append(pat[:-4] + "*.bag")
+        if ".bag" in pat:
+            expanded.append(pat.replace(".bag", ".mcap"))
+            if pat.endswith(".bag") and not pat.endswith("*.bag"):
+                expanded.append(pat[:-4] + "*.mcap")
+    seen: set[str] = set()
+    out: list[str] = []
+    for pat in expanded:
+        if pat not in seen:
+            seen.add(pat)
+            out.append(pat)
+    return out
+
+def _glob_supported_bags(raw_dir: Path, patterns: list[str]) -> list[Path]:
+    """Find bag/mcap files matching provided patterns or any supported suffix."""
+    bag_paths: list[Path] = []
+    for pat in _expand_bag_patterns(patterns):
+        bag_paths.extend(sorted(raw_dir.glob(pat)))
+    bag_paths = list(dict.fromkeys(bag_paths))
+    if bag_paths:
+        return bag_paths
+
+    # Fallback: gather any supported suffix in the folder
+    for suf in SUPPORTED_BAG_SUFFIXES:
+        bag_paths.extend(sorted(raw_dir.glob(f"*{suf}")))
+    return list(dict.fromkeys(bag_paths))
 
 
 def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
@@ -675,24 +708,16 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine which bag files to read.
-    # Prefer rosbags.yaml defaults; if missing, just use all .bag in the mission folder.
+    # Prefer rosbags.yaml defaults; if missing, just use all supported bag formats in the mission folder.
     rosbags_yaml = load_yaml(rr / "config" / "rosbags.yaml")
     patterns = rosbags_yaml.get("defaults", ["*.bag"])
-    # Expand patterns relative to the mission folder
-    bag_paths: list[Path] = []
-    for pat in patterns:
-        bag_paths.extend(sorted(raw_dir.glob(pat)))
-    # De-duplicate while preserving order
-    bag_paths = list(dict.fromkeys(bag_paths))
+    bag_paths = _glob_supported_bags(raw_dir, patterns)
     if not bag_paths:
-        # Fallback to all bags
-        bag_paths = sorted(raw_dir.glob("*.bag"))
-    if not bag_paths:
-        raise SystemExit(f"No bags found in {raw_dir}")
+        raise SystemExit(f"No bags or mcap files found in {raw_dir}")
 
     bag_paths = filter_valid_rosbags(bag_paths)
     if not bag_paths:
-        raise SystemExit(f"No valid ROS1 bags found in {raw_dir} after filtering.")
+        raise SystemExit(f"No valid ROS bags/MCAP files found in {raw_dir} after filtering.")
     print("[info] Bag paths (filtered)")
     for p in bag_paths:
         print(" -", p)

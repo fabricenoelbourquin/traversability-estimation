@@ -34,22 +34,17 @@ from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 
 from utils.paths import get_paths
-from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.ros_time import message_time_ns
-from utils.rosbag_tools import filter_valid_rosbags
+from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
+from utils.topics import load_topic_candidates
 from visualization.cluster_shading import (
     add_cluster_background,
     prepare_cluster_shading,
 )
 
-from video_metric_viewer import (
-    pick_synced_metrics,
-    get_quaternion_block,
-    normalize_quat_arrays,
-    euler_zyx_from_qWB,
-)
+from video_metric_viewer import pick_synced_metrics
 
 METRIC_LINE_ZORDER = 3.0
 PITCH_LINE_ZORDER = 2.2
@@ -86,21 +81,36 @@ def make_display_image(frame: np.ndarray) -> np.ndarray:
     return arr
 
 
-def find_camera_bag(raw_dir: Path, pattern: str, topic: str) -> Path:
-    matches = sorted(raw_dir.glob(pattern))
-    matches = filter_valid_rosbags(matches)
+def find_camera_bag(raw_dir: Path, pattern: str, topics: list[str] | str) -> tuple[Path, str]:
+    candidates = [topics] if isinstance(topics, str) else list(topics)
+    candidates = [c for c in candidates if c]
+    patterns = expand_bag_patterns(pattern)
+    matches: list[Path] = []
+    for pat in patterns:
+        matches.extend(sorted(raw_dir.glob(pat)))
+    seen: set[Path] = set()
+    unique_matches = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique_matches.append(m)
+
+    matches = filter_valid_rosbags(unique_matches)
     tried: list[str] = []
     for p in matches:
         try:
             with AnyReader([p]) as r:
                 topics = {c.topic for c in r.connections}
-            if topic in topics or topic.endswith("/image_raw") and topic + "/compressed" in topics:
-                return p
+            for cand in candidates:
+                if cand in topics:
+                    return p, cand
+                if cand.endswith("/image_raw") and cand + "/compressed" in topics:
+                    return p, cand + "/compressed"
             tried.append(f"{p.name}: {sorted(topics)}")
         except UnicodeDecodeError:
             tried.append(f"{p.name}: <cannot open>")
     raise FileNotFoundError(
-        f"Could not find bag in {raw_dir} matching {pattern!r} containing topic {topic!r}.\n" +
+        f"Could not find bag in {raw_dir} matching any of {patterns!r} containing topics {candidates!r}.\n" +
         ("Tried:\n" + "\n".join(tried) if tried else "No candidates found.")
     )
 
@@ -189,10 +199,10 @@ def main():
     ap = argparse.ArgumentParser(description="Dual-camera metric video (time + distance plots).")
     add_mission_arguments(ap)
     add_hz_argument(ap)
-    ap.add_argument("--metric", default="power_mech")
-    ap.add_argument("--camera-pattern-1", default="*_hdr_front.bag")
+    ap.add_argument("--metric", default="cost_of_transport")
+    ap.add_argument("--camera-pattern-1", default="*_hdr_front*.bag")
     ap.add_argument("--camera-topic-1", default="/boxi/hdr/front/image_raw/compressed")
-    ap.add_argument("--camera-pattern-2", default="*_anymal_depth_cameras.bag")
+    ap.add_argument("--camera-pattern-2", default="*_anymal_depth_cameras*.bag")
     ap.add_argument(
         "--camera-topic-2",
         default="/anymal/depth_camera/front_lower/depth/image_rect_raw",
@@ -223,6 +233,21 @@ def main():
     out_base = Path(P["REPO_ROOT"]) / "reports" / display_name
     out_base.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else (out_base / f"{display_name}_dual_metric_video.mp4")
+
+    default_camera_topics_1 = load_topic_candidates(
+        "camera_front",
+        [
+            "/boxi/hdr/front/image_raw/compressed",
+            "/gt_box/hdr_front/image_raw/compressed",
+        ],
+    )
+    if args.camera_topic_1:
+        camera_topics_1: list[str] = []
+        for t in [args.camera_topic_1] + default_camera_topics_1:
+            if t and t not in camera_topics_1:
+                camera_topics_1.append(t)
+    else:
+        camera_topics_1 = default_camera_topics_1
 
     metrics_path = pick_synced_metrics(synced_dir, args.hz)
     df = pd.read_parquet(metrics_path)
@@ -322,10 +347,11 @@ def main():
             return 0.0
         return float(np.interp(t_s, metric_t_plot, dist_plot, left=dist_plot[0], right=dist_plot[-1]))
 
-    bag1 = find_camera_bag(raw_dir, args.camera_pattern_1, args.camera_topic_1)
+    bag1, topic1 = find_camera_bag(raw_dir, args.camera_pattern_1, camera_topics_1)
     bag2 = None
+    topic2 = args.camera_topic_2
     if args.add_depth_cam:
-        bag2 = find_camera_bag(raw_dir, args.camera_pattern_2, args.camera_topic_2)
+        bag2, topic2 = find_camera_bag(raw_dir, args.camera_pattern_2, args.camera_topic_2)
 
     if not args.add_depth_cam and args.primary_camera == "2":
         raise SystemExit("--primary-camera=2 requires --add-depth-cam")
@@ -336,8 +362,8 @@ def main():
 
     bag_primary = bag1 if primary_idx == 1 else bag2
     bag_secondary = bag2 if primary_idx == 1 else bag1
-    topic_primary = args.camera_topic_1 if primary_idx == 1 else args.camera_topic_2
-    topic_secondary = args.camera_topic_2 if primary_idx == 1 else args.camera_topic_1
+    topic_primary = topic1 if primary_idx == 1 else topic2
+    topic_secondary = topic2 if primary_idx == 1 else topic1
 
     if args.add_depth_cam:
         with AnyReader([bag_primary]) as reader_p, AnyReader([bag_secondary]) as reader_s:
@@ -437,8 +463,8 @@ def main():
         plt.close(fig_dist)
         print(f"[ok] wrote {written} frames to {out_path}")
         print(f"     input synced: {metrics_path}")
-        print(f"     camera1 bag: {bag1}")
-        print(f"     camera2 bag: {bag2}")
+        print(f"     camera1 bag: {bag1} (topic {topic1})")
+        print(f"     camera2 bag: {bag2} (topic {topic2})")
         return
 
     # Single camera layout
@@ -503,9 +529,9 @@ def main():
     plt.close(fig_dist)
     print(f"[ok] wrote {written} frames to {out_path}")
     print(f"     input synced: {metrics_path}")
-    print(f"     camera1 bag: {bag1}")
+    print(f"     camera1 bag: {bag1} (topic {topic1})")
     if args.add_depth_cam:
-        print(f"     camera2 bag: {bag2}")
+        print(f"     camera2 bag: {bag2} (topic {topic2})")
 
 
 if __name__ == "__main__":

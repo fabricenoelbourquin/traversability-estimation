@@ -109,7 +109,7 @@ def make_patterns_for_defaults(extras: list[str]) -> list[str]:
     """
     Create glob patterns from YAML defaults + requested extras.
     - defaults: already glob patterns
-    - extras: alias -> either a glob or a bare suffix (we expand to '*_<suffix>.bag')
+    - extras: alias -> either a glob or a bare suffix (we expand to '*_<suffix>.bag' plus numbered variants)
     """
     cfg = _read_rosbags_yaml()
     pats: list[str] = list(cfg["defaults"])
@@ -118,11 +118,28 @@ def make_patterns_for_defaults(extras: list[str]) -> list[str]:
     for ex in extras:
         key = ex.lower()
         val = yaml_extras.get(key, key)  # allow raw suffix as a convenience
-        pats.append(val if ("*" in val or "?" in val) else f"*_{val}.bag")
+        if "*" in val or "?" in val:
+            pats.append(val)
+        else:
+            base = f"*_{val}"
+            pats.append(f"{base}.bag")
+            pats.append(f"{base}_*.bag")  # allow numbered splits (e.g., *_hdr_front_0.*)
+
+    # Expand .bag patterns to also request .mcap variants.
+    expanded: list[str] = []
+    for pat in pats:
+        expanded.append(pat)
+        # add trailing-wildcard variant when pattern ends with .bag but not already *.bag
+        if pat.endswith(".bag") and not pat.endswith("*.bag"):
+            expanded.append(pat[:-4] + "*.bag")
+        if ".bag" in pat:
+            expanded.append(pat.replace(".bag", ".mcap"))
+            if pat.endswith(".bag") and not pat.endswith("*.bag"):
+                expanded.append(pat[:-4] + "*.mcap")
 
     # de-duplicate preserve order
     seen, out = set(), []
-    for p in pats:
+    for p in expanded:
         if p not in seen:
             seen.add(p)
             out.append(p)
@@ -149,14 +166,17 @@ def download_selected(mission_id: str, dest: Path, selected_patterns: list[str],
     print("[info] Downloaded (pattern mode).")
 
 def _gps_files_in_dir(d: Path) -> list[Path]:
-    gps = list(d.glob("*_cpt7_ie_tc.bag")) + list(d.glob("*_cpt7_ie_rt.bag"))
+    gps: list[Path] = []
+    for suf in (".bag", ".mcap"):
+        gps.extend(d.glob(f"*_cpt7_ie_tc*{suf}"))
+        gps.extend(d.glob(f"*_cpt7_ie_rt*{suf}"))
     # ignore macOS AppleDouble
     return [p for p in gps if not p.name.startswith("._")]
 
 def _cleanup_downloaded_bags(dest_dir: Path, remove_folder: bool) -> int:
-    """Remove real .bag files (skip AppleDouble). Optionally remove folder if it ends up empty."""
+    """Remove downloaded bag/mcap files (skip AppleDouble). Optionally remove folder if it ends up empty."""
     removed = 0
-    for p in dest_dir.glob("*.bag"):
+    for p in list(dest_dir.glob("*.bag")) + list(dest_dir.glob("*.mcap")):
         if p.name.startswith("._"):
             continue
         try:

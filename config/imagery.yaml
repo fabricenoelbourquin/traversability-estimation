@@ -14,7 +14,7 @@ fetch:
   alti:
     mode: "dem"
     dem:
-      release_year: 2021          # what you WANT
+      release_year: 2021
       fallback_years: [2024, 2023, 2021, 2020, 2019]
       resolution_m: 0.5           # <-- force 0.5 m
       resolutions_m: [0.5, 2.0]   # <-- try 0.5 first, then 2.0

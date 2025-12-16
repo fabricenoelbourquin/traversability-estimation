@@ -27,6 +27,9 @@ topics:
     - /anymal/actuator_readings
     - /lpc/actuator_readings
     - /actuator_readings
+  camera_front:
+    - /boxi/hdr/front/image_raw/compressed
+    - /gt_box/hdr_front/image_raw/compressed
 
 frames:
   world: enu_origin   # fixed world frame for ENU
