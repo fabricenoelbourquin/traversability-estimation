@@ -7,11 +7,11 @@ gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
 
 dataset:
-  enabled: false
+  enabled: true
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: true # bool to enable/disable all visuals
+  enabled: false # bool to enable/disable all visuals
   timeseries:
     enabled: true
     with_speeds: true    # include commanded and actual speed plots

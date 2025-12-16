@@ -20,6 +20,8 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+import fnmatch
+from itertools import chain
 
 import numpy as np
 import pandas as pd
@@ -29,8 +31,7 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, resolve_mission_from_args
 from utils.ros_time import header_stamp_ns, message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
-import fnmatch
-from itertools import chain
+
 
 from rosbags.highlevel import AnyReader
 
@@ -852,7 +853,7 @@ def main():
             except Exception as e:
                 print(f"[warn] actuator_readings extractor failed: {e}")
 
-        # 2. Fallback: If SEA df is empty, try pulling efforts from state topic (New Dataset behavior)
+        # 2. Fallback: If SEA df is empty, try pulling efforts from state topic
         if df_sea.empty and topic_state:
             # don't print a warning if we successfully find the fallback
             try:
