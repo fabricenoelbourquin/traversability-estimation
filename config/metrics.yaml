@@ -7,10 +7,10 @@ metrics:
     - power
     - cost_of_transport
     - cost_of_transport_mech
-#    - joint_travel_rate_L1
+    - joint_travel_rate_L1
 #    - joint_travel_cum_L1
-#    - torque_L1_rate
-#    - power_mech_signed
+    - torque_L1_rate
+    - power_mech_signed
 #    - energy_pos_cum
 #    - cot_running
   cumulative:
