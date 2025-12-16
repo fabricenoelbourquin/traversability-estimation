@@ -7,6 +7,12 @@ defaults:
   - "*_anymal_imu.bag"
   - "*_adis.bag"
   - "*_stim320_imu.bag"
+  # SRB/LPC naming variants
+  - "*_lpc_locomotion*.bag"
+  - "*_lpc_state_estimator*.bag"
+  - "*_lpc_tf*.bag"
+  - "*_lpc_anymal_imu*.bag"
+  - "*_lpc_general*.bag"
 
 # keys for --extra
 extras:

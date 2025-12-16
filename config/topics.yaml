@@ -1,9 +1,37 @@
 topics:
-  cmd_vel: /anymal/twist_command         # commanded twist;
-  odom: /anymal/state_estimator/odometry # robot odometry pose/velocity
-  gps: /boxi/inertial_explorer/tc/navsatfix           # GNSS fix (NavSatFix)
-  imu: /anymal/imu                       # IMU measurements
+  # Ordered fallbacks: first present topic is used.
+  cmd_vel:
+    - /anymal/twist_command
+    - /joy_manager/twist
+    - /lpc/locomotion/twist_command
+  odom:
+    - /anymal/state_estimator/odometry
+    - /lpc/state_estimator/odometry
+    - /lpc/odometry
+    - /state_estimator/odometry
+  gps:
+    - /boxi/inertial_explorer/tc/navsatfix
+    - /gt_box/inertial_explorer/tc/navsatfix
+    - /cpt7/ie/gnss/navsatfix
+  imu:
+    - /anymal/imu
+    - /sensors/imu
+    - /lpc/anymal_imu
+    - /imu/data
+  anymal_state:
+    - /anymal/state_estimator/anymal_state
+    - /state_estimator/anymal_state
+    - /state_estimator/joint_states
+    - /lpc/state_estimator/anymal_state
+  actuator_readings:
+    - /anymal/actuator_readings
+    - /lpc/actuator_readings
+    - /actuator_readings
 
 frames:
   world: enu_origin   # fixed world frame for ENU
   base:  base
+  # If enu_origin is not connected in TF, fall back in this order.
+  world_fallbacks:
+    - map
+    - odom

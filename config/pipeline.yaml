@@ -1,17 +1,17 @@
 bags:
   enabled: true
-  camera: false
+  camera: true
   depth: false
 
 gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
 
 dataset:
-  enabled: true
+  enabled: false
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false # bool to enable/disable all visuals
+  enabled: true # bool to enable/disable all visuals
   timeseries:
     enabled: true
     with_speeds: true    # include commanded and actual speed plots
@@ -20,16 +20,16 @@ visuals:
     plot_distance: true   # activate distance plot
 
   map:
-    enabled: false
+    enabled: true
     background: both      # swissimg | cluster | both
     emb_both: false
 
   dem3d:
-    enabled: false
+    enabled: true
     plot_trajectory: true   # if true, pipeline passes --plot-trajectory
 
   compare_dem_vs_quat_pitch_roll:
-    enabled: false
+    enabled: true
     smooth_win: 1           # >1 applies smoothing; pipeline passes --smooth-win N
 
   videos:
@@ -39,9 +39,9 @@ visuals:
       overlay_pitch: true          # if true, pipeline adds --overlay-pitch
       shade_clusters: true         # add --shade-clusters
     metric_dual_viewer:
-      enabled: false
+      enabled: true
       add_depth_cam: true
       overlay_pitch: true
       shade_clusters: true
     dem_vs_quat_pitch_roll:
-      enabled: false
+      enabled: true
