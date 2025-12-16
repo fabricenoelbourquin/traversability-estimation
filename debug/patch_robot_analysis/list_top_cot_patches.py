@@ -37,7 +37,7 @@ if str(SRC_ROOT) not in sys.path:
 from utils.paths import get_paths
 
 
-DEFAULT_PATCH_SIZE_M: float = 7.0
+DEFAULT_PATCH_SIZE_M: float = 5.0
 COT_COL = "cot_patch"
 DATASET_CFG = _resolve_repo_root(THIS_FILE) / "config" / "dataset.yaml"
 

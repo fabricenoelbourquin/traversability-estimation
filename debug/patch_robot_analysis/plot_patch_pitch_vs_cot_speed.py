@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Plot patch mean robot pitch (deg) vs patch cot_patch from the
-HDF5 dataset produced by build_patch_dataset.py.
+Plot patch mean robot pitch (deg) vs cot_patch with speed_mean as color.
+
+Based on plot_patch_pitch_vs_cot.py but colors points by speed instead of patch count.
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_anal
 
 PITCH_COL = "pitch_deg_mean"
 COT_COL = "cot_patch"
+COT_P95_COL = "cot_patch_p95"
+SPEED_COL = "speed_mean"
 
 
 def _patch_label(patch_size_m: float | None) -> str:
@@ -106,18 +109,14 @@ def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[pd
     return dfs
 
 
-def _finite(arr: np.ndarray) -> np.ndarray:
-    arr = np.asarray(arr, dtype=np.float64)
-    return arr[np.isfinite(arr)]
-
-
-def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    if PITCH_COL not in df.columns or COT_COL not in df.columns:
-        raise SystemExit(f"Required columns missing: need '{PITCH_COL}' and '{COT_COL}'.")
+def _prepare(df: pd.DataFrame, cot_col: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if PITCH_COL not in df.columns or cot_col not in df.columns or SPEED_COL not in df.columns:
+        raise SystemExit(f"Required columns missing: need '{PITCH_COL}', '{cot_col}', '{SPEED_COL}'.")
     pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
-    cot = df[COT_COL].to_numpy(dtype=np.float64)
-    mask = np.isfinite(pitch) & np.isfinite(cot)
-    return pitch[mask], cot[mask]
+    cot = df[cot_col].to_numpy(dtype=np.float64)
+    speed = df[SPEED_COL].to_numpy(dtype=np.float64)
+    mask = np.isfinite(pitch) & np.isfinite(cot) & np.isfinite(speed)
+    return pitch[mask], cot[mask], speed[mask]
 
 
 def _fit_poly(x: np.ndarray, y: np.ndarray, deg: int) -> np.ndarray | None:
@@ -137,7 +136,7 @@ def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_hig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot mean robot pitch (deg) vs cot_patch for patches.")
+    ap = argparse.ArgumentParser(description="Plot mean robot pitch (deg) vs cot_patch for patches colored by speed_mean.")
     ap.add_argument(
         "--dataset",
         type=Path,
@@ -160,13 +159,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for figure (default: reports/zz_patch_analysis_robot_data/patch_pitch_vs_cot.png).",
-    )
-    ap.add_argument(
-        "--gridsize",
-        type=int,
-        default=50,
-        help="Hexbin grid size (default: 50).",
+        help="Output path for figure (default: reports/zz_patch_analysis_robot_data/<patch>/patch_pitch_vs_cot_speed.png).",
     )
     ap.add_argument(
         "--y-range",
@@ -174,28 +167,38 @@ def main() -> None:
         type=float,
         metavar=("MIN", "MAX"),
         default=None,
-        help="Optional y-axis range (cot_patch). When set, saves both unrestricted and restricted plots.",
+        help="Optional y-axis range for COT. When set, saves both unrestricted and restricted plots.",
+    )
+    ap.add_argument(
+        "--p95",
+        action="store_true",
+        help="Use cot_patch_p95 instead of cot_patch.",
     )
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
     patch_label = _patch_label(args.patch_size)
-    default_out = DEFAULT_REPORT_DIR / patch_label / "patch_pitch_vs_cot.png"
+    cot_col = COT_P95_COL if args.p95 else COT_COL
+    default_name = "patch_pitch_vs_cot_p95_speed.png" if args.p95 else "patch_pitch_vs_cot_speed.png"
+    default_out = DEFAULT_REPORT_DIR / patch_label / default_name
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
 
     pitch_all: list[np.ndarray] = []
     cot_all: list[np.ndarray] = []
+    speed_all: list[np.ndarray] = []
     for df in dfs:
-        p, c = _prepare(df)
+        p, c, s = _prepare(df, cot_col)
         pitch_all.append(p)
         cot_all.append(c)
+        speed_all.append(s)
 
-    pitch_deg = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
-    cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
-    if pitch_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite pitch/cot_patch data to plot.")
+    pitch_deg = np.concatenate(pitch_all) if pitch_all else np.array([])
+    cot_vals = np.concatenate(cot_all) if cot_all else np.array([])
+    speed_vals = np.concatenate(speed_all) if speed_all else np.array([])
+    if pitch_deg.size == 0 or cot_vals.size == 0 or speed_vals.size == 0:
+        raise SystemExit("No finite pitch/cot_patch/speed data to plot.")
 
     fit_all = _fit_poly(pitch_deg, cot_vals, deg=2)
     pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
@@ -204,28 +207,29 @@ def main() -> None:
 
     def _plot(y_range: tuple[float, float] | None, suffix: str) -> Path:
         fig, ax = plt.subplots(figsize=(7.5, 5.5))
-        hb = ax.hexbin(
+        sc = ax.scatter(
             pitch_deg,
             cot_vals,
-            gridsize=args.gridsize,
+            c=speed_vals,
             cmap="viridis",
-            mincnt=1,
-            linewidths=0.0,
+            s=12,
+            alpha=0.6,
+            edgecolors="none",
         )
         if y_range is not None:
             ax.set_ylim(y_range)
         ax.set_xlabel("pitch_deg_mean [deg]")
-        ax.set_ylabel("cot_patch")
+        ax.set_ylabel(cot_col)
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch mean robot pitch vs cot_patch{title_suffix}")
+        ax.set_title(f"Patch mean robot pitch vs {cot_col} (color={SPEED_COL}){title_suffix}")
         if x_plot.size and fit_all is not None:
             ax.plot(x_plot, np.polyval(fit_all, x_plot), color="tab:red", lw=1.4, label="quad fit (all)")
         if x_plot.size and fit_no_outliers is not None:
             ax.plot(x_plot, np.polyval(fit_no_outliers, x_plot), color="tab:orange", lw=1.4, linestyle="--", label="quad fit (no outliers)")
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
-        cb = fig.colorbar(hb, ax=ax)
-        cb.set_label("patch count")
+        cb = fig.colorbar(sc, ax=ax)
+        cb.set_label(f"{SPEED_COL} [m/s]")
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
