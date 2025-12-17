@@ -1,6 +1,6 @@
 bags:
   enabled: true
-  camera: true
+  camera: false
   depth: false
 
 gps:
