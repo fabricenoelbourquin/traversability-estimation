@@ -1,0 +1,210 @@
+[
+  {
+    "id": "624138ba-3e34-4f19-8034-af9661a566a4",
+    "name": "ALB-1"
+  },
+  {
+    "id": "4aa3b180-7422-479f-a838-344c726175e1",
+    "name": "ALB-2"
+  },
+  {
+    "id": "ccf36f13-9d19-4dca-8f4d-f797b4093c3b",
+    "name": "ALB-3"
+  },
+  {
+    "id": "0a626104-cdfa-47de-827a-806b0ca5326a",
+    "name": "ARC-1"
+  },
+  {
+    "id": "2a4c4bd7-acfd-4c00-84c3-bf5dd6a57ad6",
+    "name": "ARC-2"
+  },
+  {
+    "id": "a031c136-cdba-4547-bce7-57319891ce17",
+    "name": "ARC-3"
+  },
+  {
+    "id": "ad4cbee5-c3d8-4082-b629-e22af45faac8",
+    "name": "ARC-4"
+  },
+  {
+    "id": "ff789a67-7541-43d8-bbe7-381e5d5105ab",
+    "name": "ARC-5"
+  },
+  {
+    "id": "c38e6cdc-cadb-4f15-bd96-daa89cb46edf",
+    "name": "ARC-6"
+  },
+  {
+    "id": "529abc82-87fc-4edf-a16f-9061893c5aab",
+    "name": "ARC-7"
+  },
+  {
+    "id": "d3943914-d045-4442-a63c-903cbbbd2be1",
+    "name": "CON-1"
+  },
+  {
+    "id": "48a42585-1b42-44df-bf82-883b09706efa",
+    "name": "CON-2"
+  },
+  {
+    "id": "f6d20c92-44af-4697-a6d5-773bddc35fa5",
+    "name": "CON-3"
+  },
+  {
+    "id": "a531a101-0211-46a2-b13f-605aa4b888ab",
+    "name": "CON-4"
+  },
+  {
+    "id": "7ffa3399-837f-40b7-8a2f-5760ce136533",
+    "name": "CYN-1"
+  },
+  {
+    "id": "58e4d73e-fff1-4209-bf95-6c1ee065b3f3",
+    "name": "CYN-2"
+  },
+  {
+    "id": "aa22a692-a29d-4676-98b8-42dd417eeae4",
+    "name": "EIG-1"
+  },
+  {
+    "id": "a2bb34d5-f963-4a63-bf4a-8ffab2da1589",
+    "name": "EIG-2"
+  },
+  {
+    "id": "e97e35ad-dd7b-49c4-a158-95aba246520e",
+    "name": "ETH-1"
+  },
+  {
+    "id": "4ae7f9bc-ee51-4ba7-97c7-6a86fe765ab8",
+    "name": "ETH-2"
+  },
+  {
+    "id": "da8f2265-5138-4d0b-8ae1-01e0015d1c58",
+    "name": "ETH-3"
+  },
+  {
+    "id": "34c04ec5-c1b7-4674-9d64-99ade50f71d0",
+    "name": "GRI-1"
+  },
+  {
+    "id": "10aa8311-2487-4e5c-9136-91b1d9ae4efa",
+    "name": "HAUS-1"
+  },
+  {
+    "id": "512edee1-de86-463f-bdda-f55362e2fda1",
+    "name": "HEAP-1"
+  },
+  {
+    "id": "d38b3b33-c450-4bce-bbb8-5f961b6bb17c",
+    "name": "HIL-1"
+  },
+  {
+    "id": "1a30c7fd-d833-48ac-8bf5-0d3f3f0ba5a1",
+    "name": "HÖB-1"
+  },
+  {
+    "id": "5e356450-ccb0-4b8c-bd5e-21e5bfdb0d08",
+    "name": "HÖB-2"
+  },
+  {
+    "id": "6a572e3b-57ad-4697-9ce6-0c67f451174a",
+    "name": "ICE-1"
+  },
+  {
+    "id": "1b64c4e0-2747-4a4d-b983-2454b5481a69",
+    "name": "KÄB-1"
+  },
+  {
+    "id": "a454ce28-69f8-46a5-9168-08b2c42ae385",
+    "name": "KÄB-2"
+  },
+  {
+    "id": "8c3d3ce2-df6a-4ec4-98f5-1a9e08ef276e",
+    "name": "KÄB-3"
+  },
+  {
+    "id": "4bf387d8-624a-462b-b69b-f2b4dbfce565",
+    "name": "LEE-1"
+  },
+  {
+    "id": "19e1ac85-eaf9-4d8e-baf0-27dbb215e9f4",
+    "name": "LEICA-1"
+  },
+  {
+    "id": "fb5f7a04-e95f-4601-a6f2-948ff69f0735",
+    "name": "LEICA-2"
+  },
+  {
+    "id": "2924d315-1d96-4db7-9df2-c9fd23d3fa9e",
+    "name": "LMB-1"
+  },
+  {
+    "id": "a866b43f-4cec-427d-871a-77d95a926075",
+    "name": "LMB-2"
+  },
+  {
+    "id": "e3a92c6b-1fbb-496a-bdb0-ec754ec8f6f0",
+    "name": "PIL-1"
+  },
+  {
+    "id": "8a90fb38-885e-4b57-ad21-b7e44d3ec8fb",
+    "name": "PIL-2"
+  },
+  {
+    "id": "57363d91-6cbc-4b2f-ad25-d511fd0829e1",
+    "name": "RIV-1"
+  },
+  {
+    "id": "f7e8e6c1-828f-43a7-b047-1491217e8fb9",
+    "name": "ROOT-1"
+  },
+  {
+    "id": "75516885-5b6d-4703-9dcc-766519f9737c",
+    "name": "SBB-1"
+  },
+  {
+    "id": "6feee8a7-2588-4e7e-9fd4-cf897af71206",
+    "name": "SBB-2"
+  },
+  {
+    "id": "d7c37880-a3cf-4aaa-b489-e501591d14b7",
+    "name": "SNOW-1"
+  },
+  {
+    "id": "82e5488f-7824-45c6-94be-b3c68ca32aa7",
+    "name": "SNOW-2"
+  },
+  {
+    "id": "ee14fd01-73f1-498b-8b64-a427257ea577",
+    "name": "SNOW-3"
+  },
+  {
+    "id": "b845fb1b-310c-4236-a33c-c0d2c9a98092",
+    "name": "SPX-1"
+  },
+  {
+    "id": "57b64279-18a3-451b-a516-51c1ea9c7e9a",
+    "name": "SPX-2"
+  },
+  {
+    "id": "c31cdc28-cb10-4eff-adec-53b0069eacac",
+    "name": "SPX-3"
+  },
+  {
+    "id": "b686ebd4-da47-4e49-ab20-c5504049f4b8",
+    "name": "TRIM-1"
+  },
+    {
+    "id": "2701e5bb-9b52-41d0-a695-e5b81cda6373",
+    "name": "SRB-1"
+  },
+  {
+    "id": "6eab8f63-0582-4e05-a26a-c9df0a18f0ac",
+    "name": "SRB-2"
+  },
+  {
+    "id": "bb499317-4230-4780-b536-49b7ca789e61",
+    "name": "SRB-3"
+  }
+]
