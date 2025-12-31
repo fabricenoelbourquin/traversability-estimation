@@ -39,6 +39,7 @@ DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_anal
 
 PITCH_COL = "pitch_deg_mean"
 COT_COL = "cot_patch"
+COT_P95_COL = "cot_patch_p95"
 
 
 def _patch_label(patch_size_m: float | None) -> str:
@@ -111,11 +112,11 @@ def _finite(arr: np.ndarray) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
-def _prepare(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    if PITCH_COL not in df.columns or COT_COL not in df.columns:
-        raise SystemExit(f"Required columns missing: need '{PITCH_COL}' and '{COT_COL}'.")
+def _prepare(df: pd.DataFrame, cot_col: str) -> tuple[np.ndarray, np.ndarray]:
+    if PITCH_COL not in df.columns or cot_col not in df.columns:
+        raise SystemExit(f"Required columns missing: need '{PITCH_COL}' and '{cot_col}'.")
     pitch = df[PITCH_COL].to_numpy(dtype=np.float64)
-    cot = df[COT_COL].to_numpy(dtype=np.float64)
+    cot = df[cot_col].to_numpy(dtype=np.float64)
     mask = np.isfinite(pitch) & np.isfinite(cot)
     return pitch[mask], cot[mask]
 
@@ -176,11 +177,18 @@ def main() -> None:
         default=None,
         help="Optional y-axis range (cot_patch). When set, saves both unrestricted and restricted plots.",
     )
+    ap.add_argument(
+        "--p95",
+        action="store_true",
+        help="Use cot_patch_p95 instead of cot_patch.",
+    )
     args = ap.parse_args()
 
     dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
     patch_label = _patch_label(args.patch_size)
-    default_out = DEFAULT_REPORT_DIR / patch_label / "patch_pitch_vs_cot.png"
+    cot_col = COT_P95_COL if args.p95 else COT_COL
+    default_name = "patch_pitch_vs_cot_p95.png" if args.p95 else "patch_pitch_vs_cot.png"
+    default_out = DEFAULT_REPORT_DIR / patch_label / default_name
     dfs = _load_patch_groups(dataset_path, args.missions)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
@@ -188,14 +196,14 @@ def main() -> None:
     pitch_all: list[np.ndarray] = []
     cot_all: list[np.ndarray] = []
     for df in dfs:
-        p, c = _prepare(df)
+        p, c = _prepare(df, cot_col)
         pitch_all.append(p)
         cot_all.append(c)
 
     pitch_deg = _finite(np.concatenate(pitch_all)) if pitch_all else np.array([])
     cot_vals = _finite(np.concatenate(cot_all)) if cot_all else np.array([])
     if pitch_deg.size == 0 or cot_vals.size == 0:
-        raise SystemExit("No finite pitch/cot_patch data to plot.")
+        raise SystemExit(f"No finite pitch/{cot_col} data to plot.")
 
     fit_all = _fit_poly(pitch_deg, cot_vals, deg=2)
     pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
@@ -215,9 +223,9 @@ def main() -> None:
         if y_range is not None:
             ax.set_ylim(y_range)
         ax.set_xlabel("pitch_deg_mean [deg]")
-        ax.set_ylabel("cot_patch")
+        ax.set_ylabel(cot_col)
         title_suffix = "" if y_range is None else f" (y∈[{y_range[0]}, {y_range[1]}])"
-        ax.set_title(f"Patch mean robot pitch vs cot_patch{title_suffix}")
+        ax.set_title(f"Patch mean robot pitch vs {cot_col}{title_suffix}")
         if x_plot.size and fit_all is not None:
             ax.plot(x_plot, np.polyval(fit_all, x_plot), color="tab:red", lw=1.4, label="quad fit (all)")
         if x_plot.size and fit_no_outliers is not None:
