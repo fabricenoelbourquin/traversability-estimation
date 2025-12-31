@@ -144,11 +144,13 @@ def main():
     gps_cfg = (cfg.get("gps") or {})
     gps_required = yes(gps_cfg.get("required", True))
     bag_extras_cfg = _parse_bag_extras(bags_cfg)
+    skip_existing_bags = yes(bags_cfg.get("skip_already_downloaded_bags", True))
     dataset_cfg = (cfg.get("dataset") or {})
     dataset_config_path = Path(args.dataset_config or dataset_cfg.get("config") or "config/dataset.yaml")
     dataset_enabled = yes(dataset_cfg.get("enabled", False))
     vis = cfg.get("visuals", {})
     vis_enabled = yes(vis.get("enabled", True))
+    extract_overwrite = yes(cfg.get("overwrite_extract", False))
     if args.extra is not None:
         # CLI extras override config extras; pass an empty list to request no extras.
         bag_extras = sorted({x for x in args.extra if x})
@@ -158,6 +160,8 @@ def main():
         cmd = [py, "src/download_bag.py", "--mission-id", mission_id]
         if mission_name:
             cmd += ["--mission-name", mission_name]
+        if skip_existing_bags:
+            cmd.append("--skip-existing")
         for ex in bag_extras:
             cmd += ["--extra", ex]
         if not gps_required:
@@ -214,9 +218,12 @@ def main():
     # 2) Extract with self-heal
     def _try_extract_with_self_heal() -> None:
         """Attempt extract; if it fails due to corrupted bags, delete bad ones, re-download, and retry once."""
+        base_extract_cmd = [py, "src/extract_bag.py", *ident_either()]
+        if extract_overwrite:
+            base_extract_cmd.append("--overwrite")
         # First attempt
         try:
-            sh([py, "src/extract_bag.py", *ident_either()])
+            sh(list(base_extract_cmd))
             return
         except subprocess.CalledProcessError as first_err:
             print("[warn] extract_bag.py failed - scanning for unreadable bags…")
@@ -243,7 +250,7 @@ def main():
 
             # Retry extract once
             try:
-                sh([py, "src/extract_bag.py", *ident_either()])
+                sh(list(base_extract_cmd))
                 print("[info] extract_bag.py succeeded after self-heal.")
                 return
             except subprocess.CalledProcessError as second_err:

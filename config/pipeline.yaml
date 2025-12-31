@@ -1,7 +1,13 @@
 bags:
+  # If true, skip downloading bag patterns that already exist on disk; if false, always re-download.
+  skip_already_downloaded_bags: true
+  # Note: 'enabled' only gates bag extras below (camera/depth/etc.), not the download stage itself.
   enabled: true
   camera: false
   depth: false
+
+# If true, force extract_bag.py to overwrite existing Parquets; if false, keep existing tables.
+overwrite_extract: false
 
 gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
