@@ -8,7 +8,7 @@ Examples:
   # Overwrite existing Parquet:
   python src/extract_bag.py --mission HEAP-1 --overwrite
 
-Requires explicit topic names in config/topics.yaml (cmd_vel, odom, gps, imu).
+Requires explicit topic names in config/topics.yaml (cmd_vel, odom, gps, imu, anymal_state).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from utils.rosbag_tools import filter_valid_rosbags
 from rosbags.highlevel import AnyReader
 
 # Topics we expect to extract; set explicitly in config/topics.yaml
-REQUIRED_TOPICS = ("cmd_vel", "odom", "gps", "imu")
+REQUIRED_TOPICS = ("cmd_vel", "odom", "gps", "imu", "anymal_state")
 SUPPORTED_BAG_SUFFIXES = (".bag", ".mcap")
 
 def _norm_list(val) -> list[str]:
@@ -110,13 +110,14 @@ def _glob_supported_bags(raw_dir: Path, patterns: list[str]) -> list[Path]:
 
 def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
     """
-    Choose topic names for cmd_vel, odom, gps, imu.
+    Choose topic names for cmd_vel, odom, gps, imu, anymal_state.
     expects explicit topic names in topics.yaml like:
       topics:
         cmd_vel: /anymal/twist_command
         odom:    /anymal/state_estimator/odometry
         gps:     /cpt7/ie/gnss/navsatfix
         imu:     /anymal/imu
+        anymal_state: /anymal/state_estimator/anymal_state
     Returns a dict like {"cmd_vel": "/anymal/twist_command", "odom": "...", ...}
     """
     # Create a quick lookup dictionary of {topic_name: message_type}
@@ -128,7 +129,7 @@ def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
     if not explicit:
         raise SystemExit(
             "[error] No topics configured in topics.yaml.\n"
-            "Add a `topics` mapping with at least cmd_vel, odom, gps, imu.\n"
+            "Add a `topics` mapping with at least cmd_vel, odom, gps, imu, anymal_state.\n"
             "Available topics in these bags:\n"
             f"{_available_topics_summary(conns)}"
         )
@@ -141,6 +142,7 @@ def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
             "odom": ("odom", "state_estimator"),
             "gps": ("navsatfix", "gnss"),
             "imu": ("imu",),
+            "anymal_state": ("anymal_state", "state_estimator"),
         }.get(key, ())
         # sort the available topics to keep selection deterministic
         for topic in sorted(available):
@@ -210,72 +212,6 @@ def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
         )
 
     return chosen
-
-def select_optional_topic(
-    key: str,
-    available_topics: set[str],
-    topics_cfg: dict | None,
-    *,
-    defaults: list[str] | None = None,
-    heuristic_tokens: tuple[str, ...] = (),
-) -> tuple[str | None, str | None]:
-    """
-    Resolve an optional topic (e.g., anymal_state, actuator_readings).
-    Returns (selected_topic_or_None, warning_message_or_None).
-    """
-    explicit = (topics_cfg or {}).get("topics") or {}
-    cand_list = _norm_list(explicit.get(key))
-    if not cand_list and defaults:
-        cand_list = _norm_list(defaults)
-
-    selected = None
-    tried: list[str] = []
-    for cand in cand_list:
-        tried.append(cand)
-        if "*" in cand or "?" in cand:
-            matches = [t for t in available_topics if fnmatch.fnmatch(t, cand)]
-            if matches:
-                selected = matches[0]
-                break
-        elif cand in available_topics:
-            selected = cand
-            break
-        else:
-            matches = [t for t in available_topics if t.endswith(cand)]
-            if matches:
-                selected = matches[0]
-                break
-
-    if not selected and heuristic_tokens:
-        for topic in sorted(available_topics):
-            low = topic.lower()
-            if any(tok in low for tok in heuristic_tokens):
-                selected = topic
-                break
-
-    warn_msg = None
-    if not selected and cand_list:
-        warn_msg = f"[warn] {key}: configured topic(s) not found ({', '.join(cand_list)})."
-    elif selected and tried and selected not in tried:
-        warn_msg = f"[warn] {key}: using heuristic match '{selected}'."
-
-    return selected, warn_msg
-
-def _probe_anymal_joint_order(reader, topic: str | None = None) -> list[str] | None:
-    """Return the first non-empty joint name sequence from anymal_state-like topic, else None."""
-    conns = [c for c in reader.connections if topic is None or c.topic == topic]
-    for conn, t_log, raw in reader.messages(connections=conns):
-        try:
-            msg = reader.deserialize(raw, conn.msgtype)
-        except Exception:
-            continue
-        joints = getattr(msg, "joints", None)
-        names = getattr(joints, "name", None) if joints is not None else None
-        if names:
-            order = [str(n).strip() for n in names]
-            if len(order):
-                return order
-    return None
 
 # --- TF / quaternion helpers ---
 
@@ -433,11 +369,13 @@ def extract_base_orientation_from_tf(
     adjacency = {}
 
     def add_edge(parent: str, child: str, quat) -> None:
+        # Track the most recent transform and maintain an undirected connectivity graph
         latest[(parent, child)] = quat
         adjacency.setdefault(parent, set()).add(child)
         adjacency.setdefault(child, set()).add(parent)
 
     def compose(world: str, base: str):
+        # Find a path world->base in the graph and compose the quaternions along it
         if world not in adjacency or base not in adjacency:
             return None
         queue = deque([world])
@@ -514,8 +452,8 @@ def extract_base_orientation_from_tf(
 
     return pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True), used_world
 
-# --- ANYmalState extractor: q_*, qd_* from msg.joints ---
-def extract_anymal_state_q_qd(reader: AnyReader, topic: str) -> pd.DataFrame:
+# --- ANYmalState extractor: q_*, qd_*, tau_* from msg.joints ---
+def extract_anymal_state(reader: AnyReader, topic: str) -> pd.DataFrame:
     """
     anymal_msgs/AnymalState on /anymal/state_estimator/anymal_state
 
@@ -523,9 +461,10 @@ def extract_anymal_state_q_qd(reader: AnyReader, topic: str) -> pd.DataFrame:
       - msg.joints.name        -> list[str]
       - msg.joints.position    -> list/ndarray (rad)
       - msg.joints.velocity    -> list/ndarray (rad/s)
+      - msg.joints.effort      -> list/ndarray (Nm)
 
     Writes wide columns:
-      - q_<name>, qd_<name>
+      - q_<name>, qd_<name>, tau_<name>
     """
     tall = []
     conns = [c for c in reader.connections if c.topic == topic]
@@ -535,159 +474,76 @@ def extract_anymal_state_q_qd(reader: AnyReader, topic: str) -> pd.DataFrame:
             msg = reader.deserialize(raw, conn.msgtype)
         except Exception:
             continue
+
         joints = getattr(msg, "joints", None)
         if joints is None:
             continue
 
-        names = getattr(joints, "name", None)
-        pos = getattr(joints, "position", None)
-        vel = getattr(joints, "velocity", None)
-        if names is None or (pos is None and vel is None):
+        names_raw = getattr(joints, "name", None)
+        names = list(names_raw) if names_raw is not None else []
+        if len(names) == 0:
             continue
+
+        # Normalize possibly numpy-based sequences to plain lists; avoid truthiness on arrays.
+        def _as_list(seq) -> list:
+            if seq is None:
+                return []
+            try:
+                return list(seq)
+            except Exception:
+                return []
+
+        positions = _as_list(getattr(joints, "position", None))
+        velocities = _as_list(getattr(joints, "velocity", None))
+        efforts = _as_list(getattr(joints, "effort", None))
 
         ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
         t = float(ns) * 1e-9
-
-        names = list(names)
-        positions = list(pos) if pos is not None else []
-        velocities = list(vel) if vel is not None else []
 
         for idx, joint_name in enumerate(names):
-            q = float(positions[idx]) if idx < len(positions) else float("nan")
-            qd = float(velocities[idx]) if idx < len(velocities) else float("nan")
-            tall.append({"t": t, "joint": str(joint_name), "q": q, "qd": qd})
-
-    if not tall:
-        return pd.DataFrame(columns=["t"])
-
-    df = pd.DataFrame(tall)
-    q_w  = df.pivot_table(index="t", columns="joint", values="q",  aggfunc="last")
-    qd_w = df.pivot_table(index="t", columns="joint", values="qd", aggfunc="last")
-    q_w.columns  = [f"q_{c}"  for c in q_w.columns]
-    qd_w.columns = [f"qd_{c}" for c in qd_w.columns]
-    wide = pd.concat([q_w, qd_w], axis=1).sort_index().reset_index()
-    wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
-    return wide
-
-def extract_anymal_state_tau(reader: AnyReader, topic: str) -> pd.DataFrame:
-    """
-    Fallback: Extracts efforts from anymal_msgs/AnymalState to match the 
-    actuator_readings output format (t, tau_HAA, ...).
-    """
-    tall = []
-    conns = [c for c in reader.connections if c.topic == topic]
-
-    for conn, t_log, raw in reader.messages(connections=conns):
-        try:
-            msg = reader.deserialize(raw, conn.msgtype)
-        except Exception:
-            continue
-
-        joints = getattr(msg, "joints", None)
-        if not joints:
-            continue
-
-        names = getattr(joints, "name", None)
-        effort = getattr(joints, "effort", None)
-        
-        if names is None or effort is None:
-            continue
-
-        # Use header stamp if available, else log time
-        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
-        t = float(ns) * 1e-9
-
-        # Safely iterate
-        names_list = list(names)
-        effort_list = list(effort)
-        
-        for i, name in enumerate(names_list):
-            if i < len(effort_list):
-                # We name the column 'tau' here so the pivot later matches the SEA format
-                tall.append({"t": t, "joint": str(name), "tau": float(effort_list[i])})
-
-    if not tall:
-        return pd.DataFrame(columns=["t"])
-
-    df = pd.DataFrame(tall)
-    # Pivot exactly like extract_actuator_readings_tau does
-    tau_w = df.pivot_table(index="t", columns="joint", values="tau", aggfunc="last")
-    tau_w.columns = [f"tau_{c}" for c in tau_w.columns]
-    
-    wide = tau_w.sort_index().reset_index()
-    wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
-    return wide
-
-# --- SEA extractor: tau_* from msg.readings[i].state ---
-def extract_actuator_readings_tau(reader: AnyReader, topic: str, *, joint_state_topic: str | None = None) -> pd.DataFrame:
-    """
-    series_elastic_actuator_msgs/SeActuatorReadings on /anymal/actuator_readings
-
-    Uses, per reading r in msg.readings:
-      - prefer r.state.name (fallback to r.commanded.name)
-      - prefer r.state.joint_torque (fallback to r.commanded.joint_torque)
-
-    If names are empty, falls back to index-based labeling using the joint order
-    from /anymal/state_estimator/anymal_state (when available).
-
-    Writes wide columns: tau_<name>
-    """
-    tall: list[dict] = []
-    conns = [c for c in reader.connections if c.topic == topic]
-
-    # Fallback joint order from anymal_state (if present)
-    fallback_names = _probe_anymal_joint_order(reader, joint_state_topic)
-
-    for conn, t_log, raw in reader.messages(connections=conns):
-        try:
-            msg = reader.deserialize(raw, conn.msgtype)
-        except Exception:
-            continue
-
-        readings = getattr(msg, "readings", None)
-        if not readings:
-            continue
-
-        ns = header_stamp_ns(getattr(msg, "header", None)) or int(t_log)
-        t = float(ns) * 1e-9
-
-        for i, r in enumerate(readings):
-            st = getattr(r, "state", None)
-            cm = getattr(r, "commanded", None)
-
-            def _norm(x):
-                return str(x).strip() if x is not None else ""
-
-            st_name = _norm(getattr(st, "name", None))
-            cm_name = _norm(getattr(cm, "name", None))
-            st_tau = getattr(st, "joint_torque", None) if st is not None else None
-            cm_tau = getattr(cm, "joint_torque", None) if cm is not None else None
-
-            # Prefer explicit names; fallback to index-based mapping from anymal_state
-            name = st_name or cm_name
-            if not name and fallback_names and i < len(fallback_names):
-                name = fallback_names[i]
-
-            tau = st_tau if st_tau is not None else cm_tau
-
-            if not name or tau is None:
-                continue
-
+            row = {"t": t, "joint": str(joint_name)}
             try:
-                tall.append({"t": t, "joint": name, "tau": float(tau)})
+                if idx < len(positions):
+                    row["q"] = float(positions[idx])
             except (TypeError, ValueError):
-                continue
+                pass
+            try:
+                if idx < len(velocities):
+                    row["qd"] = float(velocities[idx])
+            except (TypeError, ValueError):
+                pass
+            try:
+                if idx < len(efforts):
+                    row["tau"] = float(efforts[idx])
+            except (TypeError, ValueError):
+                pass
+
+            # Only append rows that contain at least one numeric measurement
+            if len(row) > 2:
+                tall.append(row)
 
     if not tall:
         return pd.DataFrame(columns=["t"])
 
     df = pd.DataFrame(tall)
-    df = df[df["joint"].astype(str).str.len() > 0]
 
-    tau_w = df.pivot_table(index="t", columns="joint", values="tau", aggfunc="last")
-    tau_w.columns = [f"tau_{c}" for c in tau_w.columns]
+    wide_frames = []
+    def _pivot(val_col: str, prefix: str) -> pd.DataFrame:
+        # Pivot tall joint rows into wide form (one column per joint) for the given value
+        sub = df.pivot_table(index="t", columns="joint", values=val_col, aggfunc="last")
+        sub.columns = [f"{prefix}{c}" for c in sub.columns]
+        return sub
 
-    wide = tau_w.sort_index().reset_index()
+    for col, pref in (("q", "q_"), ("qd", "qd_"), ("tau", "tau_")):
+        if col in df and df[col].notna().any():
+            sub = _pivot(col, pref)
+            if not sub.empty:
+                wide_frames.append(sub)
+
+    if not wide_frames:
+        return pd.DataFrame(columns=["t"])
+
+    wide = pd.concat(wide_frames, axis=1).sort_index().reset_index()
     wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
     return wide
 
@@ -715,7 +571,7 @@ def main():
     bag_paths = _glob_supported_bags(raw_dir, patterns)
     if not bag_paths:
         raise SystemExit(f"No bags or mcap files found in {raw_dir}")
-
+    
     bag_paths = filter_valid_rosbags(bag_paths)
     if not bag_paths:
         raise SystemExit(f"No valid ROS bags/MCAP files found in {raw_dir} after filtering.")
@@ -731,11 +587,13 @@ def main():
 
         # Informative print
         print("[info] Topics selected")
-        for k in ("cmd_vel", "odom", "gps", "imu"):
+        keys = ("cmd_vel", "odom", "gps", "imu", "anymal_state")
+        pad = max(len(k) for k in keys)  # keep columns aligned even for longer names
+        for k in keys:
             if k in topics:
-                print(f"{k:>8}: {topics[k]}")
+                print(f"{k:>{pad}}: {topics[k]}")
             else:
-                print(f"{k:>8}: (not found)")
+                print(f"{k:>{pad}}: (not found)")
         
         # Frames from topics.yaml (optional; falls back to defaults)
         frames_cfg = (topics_cfg or {}).get("frames", {})
@@ -797,82 +655,18 @@ def main():
             empty_msg="[warn] No TF-based orientation recovered (q_WB).",
         )
 
-        # Additional ANYmal-specific topics (optional, configurable)
-        present = {c.topic: c.msgtype for c in conns}
-        available_topics = set(present)
-
-        topic_state, warn_state = select_optional_topic(
-            "anymal_state",
-            available_topics,
-            topics_cfg,
-            defaults=[
-                "/anymal/state_estimator/anymal_state",
-                "/lpc/state_estimator/anymal_state",
-                "/state_estimator/anymal_state",
-            ],
-            heuristic_tokens=("anymal_state", "state_estimator"),
-        )
-        if warn_state:
-            print(warn_state, file=sys.stderr)
-
+        topic_state = topics.get("anymal_state")
         if topic_state:
             try:
-                df_js = extract_anymal_state_q_qd(reader, topic_state)
+                df_js = extract_anymal_state(reader, topic_state)
                 write_table(
                     "joint_states",
                     df_js,
                     "joint_states.parquet",
-                    empty_msg=f"[info] No joint positions/velocities extracted from {topic_state}.",
+                    empty_msg=f"[info] No joint positions/velocities/torques extracted from {topic_state}.",
                 )
             except Exception as e:
                 print(f"[warn] anymal_state extractor failed: {e}")
-
-        # --- Actuator Readings / Torques ---
-        topic_sea, warn_sea = select_optional_topic(
-            "actuator_readings",
-            available_topics,
-            topics_cfg,
-            defaults=[
-                "/anymal/actuator_readings",
-                "/lpc/actuator_readings",
-                "/actuator_readings",
-            ],
-            heuristic_tokens=("actuator_readings", "actuator", "sea"),
-        )
-        
-        df_sea = pd.DataFrame()
-        
-        # 1. Try standard SEA topic (Existing Dataset behavior)
-        if topic_sea:
-            try:
-                df_sea = extract_actuator_readings_tau(
-                    reader, 
-                    topic_sea, 
-                    joint_state_topic=topic_state
-                )
-            except Exception as e:
-                print(f"[warn] actuator_readings extractor failed: {e}")
-
-        # 2. Fallback: If SEA df is empty, try pulling efforts from state topic
-        if df_sea.empty and topic_state:
-            # don't print a warning if we successfully find the fallback
-            try:
-                df_sea = extract_anymal_state_tau(reader, topic_state)
-                if not df_sea.empty:
-                    print(f"[info] Extracted joint torques from {topic_state} (fallback).")
-            except Exception as e:
-                print(f"[warn] Fallback effort extraction failed: {e}")
-
-        # 3. Print warning only if BOTH failed
-        if df_sea.empty and warn_sea and not topic_sea:
-             print(warn_sea, file=sys.stderr)
-
-        write_table(
-            "actuator_readings",
-            df_sea,
-            "actuator_readings.parquet",
-            empty_msg=f"[info] No joint torques extracted (checked {topic_sea or 'None'} and {topic_state or 'None'}).",
-        )
 
     # Save per-mission metadata
     topics_used = {

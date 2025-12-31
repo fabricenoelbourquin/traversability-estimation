@@ -7,7 +7,7 @@ gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
 
 dataset:
-  enabled: true
+  enabled: false
   config: "config/dataset.yaml"
 
 visuals:
