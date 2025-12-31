@@ -23,10 +23,6 @@ topics:
     - /state_estimator/anymal_state
     - /state_estimator/joint_states
     - /lpc/state_estimator/anymal_state
-  actuator_readings:
-    - /anymal/actuator_readings
-    - /lpc/actuator_readings
-    - /actuator_readings
   camera_front:
     - /boxi/hdr/front/image_raw/compressed
     - /gt_box/hdr_front/image_raw/compressed

@@ -7,6 +7,7 @@ Inputs (if present) from data/tables/<mission>/ :
   - odom.parquet     (cols: t, vx, vy, x, y, speed [optional])
   - gps.parquet      (cols: t, lat, lon, alt)
   - imu.parquet      (optional; cols: t, roll, pitch, yaw, ...)
+  - joint_states.parquet (optional; cols: q_*, qd_*, tau_*)
 
 Outputs to data/synced/<mission>/ :
   - synced_<Hz>Hz.parquet
@@ -240,10 +241,9 @@ def main():
     df_gps  = load_df(tables_dir / "gps.parquet")
     df_imu  = load_df(tables_dir / "imu.parquet")
     df_qwb  = load_df(tables_dir / "base_orientation.parquet")
-    df_js   = load_df(tables_dir / "joint_states.parquet")         # q_*, qd_*
-    df_sea  = load_df(tables_dir / "actuator_readings.parquet")    # tau_*
+    df_js   = load_df(tables_dir / "joint_states.parquet")         # q_*, qd_*, tau_*
 
-    dfs = [d for d in [df_cmd, df_odom, df_gps, df_imu, df_js, df_sea] if d is not None and len(d)]
+    dfs = [d for d in [df_cmd, df_odom, df_gps, df_imu, df_js] if d is not None and len(d)]
 
     # Build a uniform master time base spanning all inputs
     master = make_master_time(dfs, hz)
@@ -276,8 +276,6 @@ def main():
     # Joint states & torques
     if df_js is not None and len(df_js):
         synced = asof_join(synced, df_js, direction, tol_s)
-    if df_sea is not None and len(df_sea):
-        synced = asof_join(synced, df_sea, direction, tol_s)
     # Interpolate numeric gaps (bounded by limit_seconds)
     synced = interpolate_numeric(synced, interp_limit_s, interp_method)
 
