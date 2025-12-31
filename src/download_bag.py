@@ -148,6 +148,17 @@ def make_patterns_for_defaults(extras: list[str]) -> list[str]:
 def ensure_dirs(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
+def _split_existing_patterns(dest_dir: Path, patterns: list[str]) -> tuple[list[str], list[str]]:
+    """Return (to_download, already_present) by checking glob matches in dest_dir."""
+    to_dl: list[str] = []
+    present: list[str] = []
+    for pat in patterns:
+        if list(dest_dir.glob(pat)):
+            present.append(pat)
+        else:
+            to_dl.append(pat)
+    return to_dl, present
+
 def download_selected(mission_id: str, dest: Path, selected_patterns: list[str], dry: bool) -> None:
     if not selected_patterns:
         raise RuntimeError("No patterns provided to download.")
@@ -204,6 +215,8 @@ def main():
     ap.add_argument("--mission-name", default=None, help="Optional alias (e.g., Heap-1)")
     ap.add_argument("--extra", nargs="*", default=[], help="Extra bag kinds to include (e.g., adis locomotion dlio)")
     ap.add_argument("--dry-run", action="store_true", help="Print commands, do not download")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="Skip download for patterns that already exist in the mission folder.")
 
     ap.add_argument("--require-gps", action=BooleanOptionalAction, default=True,
                     help="If set (default), exit with code 20 when no GPS bag is present.")
@@ -236,7 +249,15 @@ def main():
     if args.require_gps and not args.dry_run:
         if gps_patterns:
             print("[info] Probing for GPS bags first…")
-            download_selected(args.mission_id, dest_dir, gps_patterns, dry=False)
+            gps_to_dl, gps_present = _split_existing_patterns(dest_dir, gps_patterns) if args.skip_existing else (gps_patterns, [])
+            if gps_present:
+                print("[info] GPS patterns already present locally:")
+                for pat in gps_present:
+                    print("  -", pat)
+            if gps_to_dl:
+                download_selected(args.mission_id, dest_dir, gps_to_dl, dry=False)
+            else:
+                print("[info] Skipping GPS download; matching files already exist.")
         else:
             print("[warn] No GPS patterns in configuration; cannot probe before full download.", file=sys.stderr)
 
@@ -260,8 +281,16 @@ def main():
         print("          ", " ".join(["klein", "download", "-m", args.mission_id, "--dest", str(dest_dir), *pats]))
     else:
         pats = non_gps_patterns if args.require_gps else patterns
+        if args.skip_existing:
+            pats, already = _split_existing_patterns(dest_dir, pats)
+            if already:
+                print("[info] Patterns already present locally (skipping):")
+                for pat in already:
+                    print("  -", pat)
         if pats:
             download_selected(args.mission_id, dest_dir, pats, dry=False)
+        else:
+            print("[info] Skipping download; all requested patterns already exist.")
 
     # Record mission metadata only when proceeding (i.e., not skipped)
     mj_path = missions_json_path(P)
