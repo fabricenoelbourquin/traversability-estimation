@@ -34,3 +34,8 @@ frames:
   world_fallbacks:
     - map
     - odom
+  # Optional: if ENU->base is missing, use ENU->imu and rotate into base frame.
+  imu_fallback_frame: cpt7_imu
+  # Rotation from IMU frame to base frame (roll, pitch, yaw in degrees).
+  # Applied as: q_WB = q_WI * inv(q_imu_to_base).
+  imu_to_base_rpy_deg: [180, 0, 0]

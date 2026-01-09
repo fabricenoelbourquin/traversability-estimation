@@ -273,6 +273,20 @@ def main():
             neg = synced["qw_WB"] < 0
             for c in ("qw_WB","qx_WB","qy_WB","qz_WB"):
                 synced.loc[neg, c] = -synced.loc[neg, c]
+        # Optional map-based orientation block
+        map_cols = ("qw_map", "qx_map", "qy_map", "qz_map")
+        if all(c in df_qwb.columns for c in map_cols):
+            qmap = df_qwb.rename(columns={
+                "qw_map": "qw_WB_map",
+                "qx_map": "qx_WB_map",
+                "qy_map": "qy_WB_map",
+                "qz_map": "qz_WB_map",
+            })
+            synced = asof_join(synced, qmap[["t","qw_WB_map","qx_WB_map","qy_WB_map","qz_WB_map"]], direction, tol_s)
+            if "qw_WB_map" in synced:
+                neg_map = synced["qw_WB_map"] < 0
+                for c in ("qw_WB_map","qx_WB_map","qy_WB_map","qz_WB_map"):
+                    synced.loc[neg_map, c] = -synced.loc[neg_map, c]
     # Joint states & torques
     if df_js is not None and len(df_js):
         synced = asof_join(synced, df_js, direction, tol_s)
