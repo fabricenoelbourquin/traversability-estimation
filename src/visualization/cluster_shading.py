@@ -15,15 +15,10 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+import rasterio
+from pyproj import Transformer
+from rasterio.transform import rowcol
 
-try:
-    import rasterio
-    from pyproj import Transformer
-    from rasterio.transform import rowcol
-except ImportError:
-    rasterio = None
-    Transformer = None
-    rowcol = None
 
 
 @dataclass

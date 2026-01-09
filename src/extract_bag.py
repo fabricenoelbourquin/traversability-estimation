@@ -239,6 +239,68 @@ def _quat_norm(q):
         return q
     return (w/n, x/n, y/n, z/n)
 
+def _rpy_deg_to_quat(roll_deg: float, pitch_deg: float, yaw_deg: float) -> tuple[float, float, float, float]:
+    roll = np.deg2rad(roll_deg)
+    pitch = np.deg2rad(pitch_deg)
+    yaw = np.deg2rad(yaw_deg)
+    cr = float(np.cos(roll * 0.5))
+    sr = float(np.sin(roll * 0.5))
+    cp = float(np.cos(pitch * 0.5))
+    sp = float(np.sin(pitch * 0.5))
+    cy = float(np.cos(yaw * 0.5))
+    sy = float(np.sin(yaw * 0.5))
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    return (qw, qx, qy, qz)
+
+def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float] | None:
+    quat_cfg = frames_cfg.get("imu_to_base_quat")
+    rpy_cfg = frames_cfg.get("imu_to_base_rpy_deg")
+    if quat_cfg is not None:
+        try:
+            qw, qx, qy, qz = (float(x) for x in quat_cfg)
+        except Exception:
+            print("[warn] imu_to_base_quat must be a 4-element list [w, x, y, z].", file=sys.stderr)
+            return None
+        return _quat_norm((qw, qx, qy, qz))
+    if rpy_cfg is not None:
+        try:
+            roll_deg, pitch_deg, yaw_deg = (float(x) for x in rpy_cfg)
+        except Exception:
+            print("[warn] imu_to_base_rpy_deg must be a 3-element list [roll, pitch, yaw].", file=sys.stderr)
+            return None
+        return _quat_norm(_rpy_deg_to_quat(roll_deg, pitch_deg, yaw_deg))
+    return None
+
+def _apply_quat_offset(df: pd.DataFrame, q_offset: tuple[float, float, float, float], *, invert: bool) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if invert:
+        q_offset = _quat_conj(q_offset)
+    q_offset = _quat_norm(q_offset)
+    qw = df["qw"].to_numpy(dtype=np.float64)
+    qx = df["qx"].to_numpy(dtype=np.float64)
+    qy = df["qy"].to_numpy(dtype=np.float64)
+    qz = df["qz"].to_numpy(dtype=np.float64)
+    w2, x2, y2, z2 = q_offset
+    w = qw * w2 - qx * x2 - qy * y2 - qz * z2
+    x = qw * x2 + qx * w2 + qy * z2 - qz * y2
+    y = qw * y2 - qx * z2 + qy * w2 + qz * x2
+    z = qw * z2 + qx * y2 - qy * x2 + qz * w2
+    n = np.sqrt(w * w + x * x + y * y + z * z)
+    n[n == 0.0] = 1.0
+    w, x, y, z = w / n, x / n, y / n, z / n
+    neg = w < 0.0
+    w[neg], x[neg], y[neg], z[neg] = -w[neg], -x[neg], -y[neg], -z[neg]
+    out = df.copy()
+    out["qw"] = w
+    out["qx"] = x
+    out["qy"] = y
+    out["qz"] = z
+    return out
+
 # --------------------- extractors ---------------------
 
 def extract_cmd_vel(reader: AnyReader, topic: str) -> pd.DataFrame:
@@ -600,6 +662,10 @@ def main():
         world_frame = frames_cfg.get("world", "enu_origin")
         base_frame  = frames_cfg.get("base",  "base")
         print(f"[info] Frames: world='{world_frame}'  base='{base_frame}'")
+        imu_fallback_frame = frames_cfg.get("imu_fallback_frame", "cpt7_imu")
+        imu_to_base_q = _load_imu_to_base_quat(frames_cfg)
+        if imu_to_base_q is not None:
+            print(f"[info] IMU correction enabled for frame '{imu_fallback_frame}' (imu->base).")
 
         # Extract & save
         outputs = {}
@@ -625,6 +691,11 @@ def main():
             write_table("imu", extract_imu(reader, topics["imu"]), "imu.parquet")
         # --- Extract base orientation q_WB (base→world) from TF and save as a table
         used_tf_world = None
+        used_tf_world_map = None
+        base_frame_used = base_frame
+        imu_fallback_frame_used = None
+        imu_correction_applied = False
+        df_q_map = pd.DataFrame()
         try:
             df_q, used_tf_world = extract_base_orientation_from_tf(
                 reader,
@@ -635,6 +706,41 @@ def main():
         except Exception as e:
             df_q = pd.DataFrame(columns=["stamp_ns","t","qw","qx","qy","qz"])
             print(f"[warn] TF orientation extraction failed: {e}")
+
+        # If ENU->base is missing and we fell back to map/odom, prefer ENU->imu_fallback_frame
+        enu_requested = _sanitize_frame(world_frame) == "enu_origin"
+        primary_is_world_fallback = (
+            used_tf_world
+            and enu_requested
+            and _sanitize_frame(used_tf_world) != _sanitize_frame(world_frame)
+        )
+
+        if primary_is_world_fallback and not df_q.empty and imu_fallback_frame:
+            # Keep the original (likely map-based) orientation with a _map suffix
+            df_q_map = df_q.rename(columns={
+                "qw": "qw_map",
+                "qx": "qx_map",
+                "qy": "qy_map",
+                "qz": "qz_map",
+            })
+            used_tf_world_map = used_tf_world
+            try:
+                df_q_alt, used_tf_world_alt = extract_base_orientation_from_tf(
+                    reader,
+                    world_frame,
+                    imu_fallback_frame,
+                    world_fallbacks=[],
+                )
+                if not df_q_alt.empty and _sanitize_frame(used_tf_world_alt or "") == _sanitize_frame(world_frame):
+                    df_q = df_q_alt
+                    used_tf_world = used_tf_world_alt
+                    base_frame_used = imu_fallback_frame
+                    imu_fallback_frame_used = imu_fallback_frame
+                    print(f"[info] Using ENU->{imu_fallback_frame} orientation as default; map/odom saved with _map suffix.")
+                else:
+                    print(f"[warn] ENU->{imu_fallback_frame} orientation not recovered; keeping map/odom fallback as default.")
+            except Exception as e:
+                print(f"[warn] ENU->{imu_fallback_frame} extraction failed; keeping map/odom fallback: {e}")
 
         if used_tf_world and used_tf_world != world_frame:
             print(f"[warn] TF world frame fallback: requested '{world_frame}' but using '{used_tf_world}'.")
@@ -647,11 +753,50 @@ def main():
             used_tf_world = "odom"
             print("[warn] No TF-based orientation recovered; falling back to odom quaternion (world='odom').")
 
+        # If we used an IMU frame, rotate it into the requested base frame.
+        if (
+            imu_to_base_q is not None
+            and base_frame_used
+            and imu_fallback_frame
+            and _sanitize_frame(base_frame_used) == _sanitize_frame(imu_fallback_frame)
+            and _sanitize_frame(base_frame_used) != _sanitize_frame(base_frame)
+            and not df_q.empty
+        ):
+            df_q = _apply_quat_offset(df_q, imu_to_base_q, invert=True)
+            imu_correction_applied = True
+            base_frame_used = base_frame
+            print(f"[info] Applied IMU->base correction for frame '{imu_fallback_frame}'.")
+
+        # Attach map-based orientation (if present) alongside the default orientation
+        if not df_q.empty and not df_q_map.empty:
+            df_q = pd.merge_asof(
+                df_q.sort_values("stamp_ns"),
+                df_q_map[["stamp_ns", "qw_map", "qx_map", "qy_map", "qz_map"]].sort_values("stamp_ns"),
+                on="stamp_ns",
+                direction="nearest",
+            )
+        elif df_q.empty and not df_q_map.empty:
+            # Fall back entirely to the map-based orientation if nothing else exists
+            df_q = df_q_map.rename(columns={
+                "qw_map": "qw",
+                "qx_map": "qx",
+                "qy_map": "qy",
+                "qz_map": "qz",
+            })
+            used_tf_world = used_tf_world_map or used_tf_world
+
         write_table(
             "base_orientation",
             df_q,
             "base_orientation.parquet",
-            extra={"world_frame": used_tf_world or world_frame, "base_frame": base_frame},
+            extra={
+                "world_frame": used_tf_world or world_frame,
+                "base_frame_requested": base_frame,
+                "base_frame_used": base_frame_used,
+                "map_world_frame": used_tf_world_map,
+                "imu_fallback_frame": imu_fallback_frame_used,
+                "imu_correction_applied": imu_correction_applied,
+            },
             empty_msg="[warn] No TF-based orientation recovered (q_WB).",
         )
 
