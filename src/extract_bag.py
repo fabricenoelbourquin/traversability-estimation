@@ -19,9 +19,10 @@ import os
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 import fnmatch
-from itertools import chain
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,23 @@ def _norm_list(val) -> list[str]:
         return [str(x) for x in val if x]
     return [str(val)]
 
+@dataclass(frozen=True)
+class FramesConfig:
+    world: str
+    base: str
+    imu_fallback_frame: str
+    world_fallbacks: list[str] | None
+    imu_to_base_q: tuple[float, float, float, float] | None
+
+@dataclass
+class OrientationResult:
+    df: pd.DataFrame
+    used_tf_world: str | None
+    base_frame_used: str
+    map_world_frame: str | None
+    imu_fallback_frame_used: str | None
+    imu_correction_applied: bool
+
 # --------------------- helpers ---------------------
 
 def load_yaml(p: Path) -> dict:
@@ -65,6 +83,55 @@ def repo_root() -> Path:
 def load_missions_json(rr: Path) -> dict:
     mj = rr / "config" / "missions.json"
     return json.loads(mj.read_text()) if mj.exists() else {}
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Extract key topics from mission rosbags to Parquet.")
+    add_mission_arguments(ap)
+    ap.add_argument("--topics-cfg", default=str(repo_root() / "config" / "topics.yaml"),
+                    help="Topics mapping YAML (explicit topic names).")
+    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing Parquet files.")
+    return ap.parse_args()
+
+def resolve_bag_paths(rr: Path, raw_dir: Path) -> list[Path]:
+    rosbags_yaml = load_yaml(rr / "config" / "rosbags.yaml")
+    patterns = rosbags_yaml.get("defaults", ["*.bag"])
+    bag_paths = _glob_supported_bags(raw_dir, patterns)
+    if not bag_paths:
+        raise SystemExit(f"No bags or mcap files found in {raw_dir}")
+    bag_paths = filter_valid_rosbags(bag_paths)
+    if not bag_paths:
+        raise SystemExit(f"No valid ROS bags/MCAP files found in {raw_dir} after filtering.")
+    return bag_paths
+
+def print_bag_paths(bag_paths: list[Path]) -> None:
+    print("[info] Bag paths (filtered)")
+    for path in bag_paths:
+        print(" -", path)
+
+def print_selected_topics(topics: dict[str, str]) -> None:
+    print("[info] Topics selected")
+    keys = ("cmd_vel", "odom", "gps", "imu", "anymal_state")
+    pad = max(len(k) for k in keys)
+    for key in keys:
+        if key in topics:
+            print(f"{key:>{pad}}: {topics[key]}")
+        else:
+            print(f"{key:>{pad}}: (not found)")
+
+def build_frames_config(topics_cfg: dict) -> FramesConfig:
+    frames_cfg = (topics_cfg or {}).get("frames", {})
+    return FramesConfig(
+        world=frames_cfg.get("world", "enu_origin"),
+        base=frames_cfg.get("base", "base"),
+        imu_fallback_frame=frames_cfg.get("imu_fallback_frame", "cpt7_imu"),
+        world_fallbacks=frames_cfg.get("world_fallbacks"),
+        imu_to_base_q=_load_imu_to_base_quat(frames_cfg),
+    )
+
+def print_frames_info(frames_cfg: FramesConfig) -> None:
+    print(f"[info] Frames: world='{frames_cfg.world}'  base='{frames_cfg.base}'")
+    if frames_cfg.imu_to_base_q is not None:
+        print(f"[info] IMU correction enabled for frame '{frames_cfg.imu_fallback_frame}' (imu->base).")
 
 def _available_topics_summary(conns, limit: int = 30) -> str:
     """Pretty-print the topics present in the opened bags (for error messages)."""
@@ -425,6 +492,7 @@ def extract_base_orientation_from_tf(
     if not entries:
         return pd.DataFrame(columns=["stamp_ns", "t", "qw", "qx", "qy", "qz"]), None
 
+    # Sort static transforms first so they can seed the graph for later dynamic updates.
     entries.sort(key=lambda entry: (0 if entry[0] else 1, entry[1]))
 
     latest = {}
@@ -458,6 +526,7 @@ def extract_base_orientation_from_tf(
             path.append(node)
             node = prev[node]
         path.reverse()
+        # Multiply quaternions along the path to build the world->base orientation.
         q_total = (1.0, 0.0, 0.0, 0.0)
         for frm, to in zip(path[:-1], path[1:]):
             hop = latest.get((frm, to))
@@ -496,6 +565,7 @@ def extract_base_orientation_from_tf(
         if is_static and rows:
             continue
         if last_q is not None:
+            # Drop repeated orientations to keep the output sparse.
             same = (
                 np.allclose(q_wb, last_q, atol=1e-6)
                 or np.allclose(q_wb, tuple(-c for c in last_q), atol=1e-6)
@@ -609,209 +679,216 @@ def extract_anymal_state(reader: AnyReader, topic: str) -> pd.DataFrame:
     wide = wide[wide["t"].notna()].drop_duplicates("t", keep="last").reset_index(drop=True)
     return wide
 
+# --------------------- orchestration ---------------------
+
+def write_table(
+    outputs: dict,
+    out_dir: Path,
+    overwrite: bool,
+    name: str,
+    df: pd.DataFrame,
+    filename: str,
+    *,
+    extra: dict | None = None,
+    empty_msg: str | None = None,
+) -> None:
+    if df.empty:
+        if empty_msg:
+            print(empty_msg)
+        return
+    path = out_dir / filename
+    if overwrite or not path.exists():
+        df.to_parquet(path, index=False)
+    outputs[name] = {"rows": int(len(df)), "path": str(path), **(extra or {})}
+
+def extract_orientation_table(
+    reader: AnyReader,
+    frames_cfg: FramesConfig,
+    odom_df: pd.DataFrame | None,
+) -> OrientationResult:
+    used_tf_world = None
+    used_tf_world_map = None
+    base_frame_used = frames_cfg.base
+    imu_fallback_frame_used = None
+    imu_correction_applied = False
+    df_q_map = pd.DataFrame()
+
+    try:
+        df_q, used_tf_world = extract_base_orientation_from_tf(
+            reader,
+            frames_cfg.world,
+            frames_cfg.base,
+            world_fallbacks=frames_cfg.world_fallbacks,
+        )
+    except Exception as e:
+        df_q = pd.DataFrame(columns=["stamp_ns", "t", "qw", "qx", "qy", "qz"])
+        print(f"[warn] TF orientation extraction failed: {e}")
+
+    enu_requested = _sanitize_frame(frames_cfg.world) == "enu_origin"
+    primary_is_world_fallback = (
+        used_tf_world
+        and enu_requested
+        and _sanitize_frame(used_tf_world) != _sanitize_frame(frames_cfg.world)
+    )
+
+    if primary_is_world_fallback and not df_q.empty and frames_cfg.imu_fallback_frame:
+        # Keep map/odom as a secondary stream and try to recover ENU via IMU fallback.
+        df_q_map = df_q.rename(columns={
+            "qw": "qw_map",
+            "qx": "qx_map",
+            "qy": "qy_map",
+            "qz": "qz_map",
+        })
+        used_tf_world_map = used_tf_world
+        try:
+            df_q_alt, used_tf_world_alt = extract_base_orientation_from_tf(
+                reader,
+                frames_cfg.world,
+                frames_cfg.imu_fallback_frame,
+                world_fallbacks=[],
+            )
+            if not df_q_alt.empty and _sanitize_frame(used_tf_world_alt or "") == _sanitize_frame(frames_cfg.world):
+                df_q = df_q_alt
+                used_tf_world = used_tf_world_alt
+                base_frame_used = frames_cfg.imu_fallback_frame
+                imu_fallback_frame_used = frames_cfg.imu_fallback_frame
+                print(f"[info] Using ENU->{frames_cfg.imu_fallback_frame} orientation as default; map/odom saved with _map suffix.")
+            else:
+                print(f"[warn] ENU->{frames_cfg.imu_fallback_frame} orientation not recovered; keeping map/odom fallback as default.")
+        except Exception as e:
+            print(f"[warn] ENU->{frames_cfg.imu_fallback_frame} extraction failed; keeping map/odom fallback: {e}")
+
+    if used_tf_world and used_tf_world != frames_cfg.world:
+        print(f"[warn] TF world frame fallback: requested '{frames_cfg.world}' but using '{used_tf_world}'.")
+    if not used_tf_world and not df_q.empty:
+        used_tf_world = frames_cfg.world
+
+        if df_q.empty and odom_df is not None and not odom_df.empty:
+            df_q = odom_df[["stamp_ns", "t", "qw", "qx", "qy", "qz"]].copy()
+            used_tf_world = "odom"
+            print("[warn] No TF-based orientation recovered; falling back to odom quaternion (world='odom').")
+
+    if (
+        frames_cfg.imu_to_base_q is not None
+        and base_frame_used
+        and frames_cfg.imu_fallback_frame
+        and _sanitize_frame(base_frame_used) == _sanitize_frame(frames_cfg.imu_fallback_frame)
+        and _sanitize_frame(base_frame_used) != _sanitize_frame(frames_cfg.base)
+        and not df_q.empty
+    ):
+        # Rotate IMU-frame orientation into the requested base frame.
+        df_q = _apply_quat_offset(df_q, frames_cfg.imu_to_base_q, invert=True)
+        imu_correction_applied = True
+        base_frame_used = frames_cfg.base
+        print(f"[info] Applied IMU->base correction for frame '{frames_cfg.imu_fallback_frame}'.")
+
+    if not df_q.empty and not df_q_map.empty:
+        # Align map-based orientation to the main stream for comparison/debugging.
+        df_q = pd.merge_asof(
+            df_q.sort_values("stamp_ns"),
+            df_q_map[["stamp_ns", "qw_map", "qx_map", "qy_map", "qz_map"]].sort_values("stamp_ns"),
+            on="stamp_ns",
+            direction="nearest",
+        )
+    elif df_q.empty and not df_q_map.empty:
+        # No primary orientation recovered; promote map-based orientation to the default.
+        df_q = df_q_map.rename(columns={
+            "qw_map": "qw",
+            "qx_map": "qx",
+            "qy_map": "qy",
+            "qz_map": "qz",
+        })
+        used_tf_world = used_tf_world_map or used_tf_world
+
+    return OrientationResult(
+        df=df_q,
+        used_tf_world=used_tf_world,
+        base_frame_used=base_frame_used,
+        map_world_frame=used_tf_world_map,
+        imu_fallback_frame_used=imu_fallback_frame_used,
+        imu_correction_applied=imu_correction_applied,
+    )
+
+def extract_tables(
+    reader: AnyReader,
+    topics: dict[str, str],
+    frames_cfg: FramesConfig,
+    out_dir: Path,
+    overwrite: bool,
+) -> dict:
+    outputs: dict = {}
+    odom_df = None
+
+    if topics.get("cmd_vel"):
+        write_table(outputs, out_dir, overwrite, "cmd_vel", extract_cmd_vel(reader, topics["cmd_vel"]), "cmd_vel.parquet")
+    if topics.get("odom"):
+        odom_df = extract_odom(reader, topics["odom"])
+        write_table(outputs, out_dir, overwrite, "odom", odom_df, "odom.parquet")
+    if topics.get("gps"):
+        write_table(outputs, out_dir, overwrite, "gps", extract_gps(reader, topics["gps"]), "gps.parquet")
+    if topics.get("imu"):
+        write_table(outputs, out_dir, overwrite, "imu", extract_imu(reader, topics["imu"]), "imu.parquet")
+
+    orientation = extract_orientation_table(reader, frames_cfg, odom_df)
+    write_table(
+        outputs,
+        out_dir,
+        overwrite,
+        "base_orientation",
+        orientation.df,
+        "base_orientation.parquet",
+        extra={
+            "world_frame": orientation.used_tf_world or frames_cfg.world,
+            "base_frame_requested": frames_cfg.base,
+            "base_frame_used": orientation.base_frame_used,
+            "map_world_frame": orientation.map_world_frame,
+            "imu_fallback_frame": orientation.imu_fallback_frame_used,
+            "imu_correction_applied": orientation.imu_correction_applied,
+        },
+        empty_msg="[warn] No TF-based orientation recovered (q_WB).",
+    )
+
+    topic_state = topics.get("anymal_state")
+    if topic_state:
+        try:
+            df_js = extract_anymal_state(reader, topic_state)
+            write_table(
+                outputs,
+                out_dir,
+                overwrite,
+                "joint_states",
+                df_js,
+                "joint_states.parquet",
+                empty_msg=f"[info] No joint positions/velocities/torques extracted from {topic_state}.",
+            )
+        except Exception as e:
+            print(f"[warn] anymal_state extractor failed: {e}")
+
+    return outputs
+
 # --------------------- main ---------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Extract key topics from mission rosbags to Parquet.")
-    add_mission_arguments(ap)
-    ap.add_argument("--topics-cfg", default=str(repo_root() / "config" / "topics.yaml"),
-                    help="Topics mapping YAML (explicit topic names).")
-    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing Parquet files.")
-    args = ap.parse_args()
-
+    args = parse_args()
     P = get_paths()
     rr = P["REPO_ROOT"]
     missions = load_missions_json(rr)
     mp = resolve_mission_from_args(args, P)
     mission_id, mission_folder, raw_dir, out_dir = mp.mission_id, mp.folder, mp.raw, mp.tables
     out_dir.mkdir(parents=True, exist_ok=True)
+    bag_paths = resolve_bag_paths(rr, raw_dir)
+    print_bag_paths(bag_paths)
 
-    # Determine which bag files to read.
-    # Prefer rosbags.yaml defaults; if missing, just use all supported bag formats in the mission folder.
-    rosbags_yaml = load_yaml(rr / "config" / "rosbags.yaml")
-    patterns = rosbags_yaml.get("defaults", ["*.bag"])
-    bag_paths = _glob_supported_bags(raw_dir, patterns)
-    if not bag_paths:
-        raise SystemExit(f"No bags or mcap files found in {raw_dir}")
-    
-    bag_paths = filter_valid_rosbags(bag_paths)
-    if not bag_paths:
-        raise SystemExit(f"No valid ROS bags/MCAP files found in {raw_dir} after filtering.")
-    print("[info] Bag paths (filtered)")
-    for p in bag_paths:
-        print(" -", p)
-
-    # Open all selected bags as a single logical dataset
     with AnyReader(bag_paths) as reader:
         conns = list(reader.connections)
         topics_cfg = load_yaml(Path(args.topics_cfg))
         topics = choose_topics(conns, topics_cfg)
+        print_selected_topics(topics)
 
-        # Informative print
-        print("[info] Topics selected")
-        keys = ("cmd_vel", "odom", "gps", "imu", "anymal_state")
-        pad = max(len(k) for k in keys)  # keep columns aligned even for longer names
-        for k in keys:
-            if k in topics:
-                print(f"{k:>{pad}}: {topics[k]}")
-            else:
-                print(f"{k:>{pad}}: (not found)")
-        
-        # Frames from topics.yaml (optional; falls back to defaults)
-        frames_cfg = (topics_cfg or {}).get("frames", {})
-        world_frame = frames_cfg.get("world", "enu_origin")
-        base_frame  = frames_cfg.get("base",  "base")
-        print(f"[info] Frames: world='{world_frame}'  base='{base_frame}'")
-        imu_fallback_frame = frames_cfg.get("imu_fallback_frame", "cpt7_imu")
-        imu_to_base_q = _load_imu_to_base_quat(frames_cfg)
-        if imu_to_base_q is not None:
-            print(f"[info] IMU correction enabled for frame '{imu_fallback_frame}' (imu->base).")
+        frames_cfg = build_frames_config(topics_cfg)
+        print_frames_info(frames_cfg)
 
-        # Extract & save
-        outputs = {}
-        def write_table(name: str, df: pd.DataFrame, filename: str, *, extra=None, empty_msg: str | None = None) -> None:
-            if df.empty:
-                if empty_msg:
-                    print(empty_msg)
-                return
-            path = out_dir / filename
-            if args.overwrite or not path.exists():
-                df.to_parquet(path, index=False)
-            outputs[name] = {"rows": int(len(df)), "path": str(path), **(extra or {})}
-
-        odom_df = None
-        if topics.get("cmd_vel"):
-            write_table("cmd_vel", extract_cmd_vel(reader, topics["cmd_vel"]), "cmd_vel.parquet")
-        if topics.get("odom"):
-            odom_df = extract_odom(reader, topics["odom"])
-            write_table("odom", odom_df, "odom.parquet")
-        if topics.get("gps"):
-            write_table("gps", extract_gps(reader, topics["gps"]), "gps.parquet")
-        if topics.get("imu"):
-            write_table("imu", extract_imu(reader, topics["imu"]), "imu.parquet")
-        # --- Extract base orientation q_WB (base→world) from TF and save as a table
-        used_tf_world = None
-        used_tf_world_map = None
-        base_frame_used = base_frame
-        imu_fallback_frame_used = None
-        imu_correction_applied = False
-        df_q_map = pd.DataFrame()
-        try:
-            df_q, used_tf_world = extract_base_orientation_from_tf(
-                reader,
-                world_frame,
-                base_frame,
-                world_fallbacks=(frames_cfg or {}).get("world_fallbacks"),
-            )
-        except Exception as e:
-            df_q = pd.DataFrame(columns=["stamp_ns","t","qw","qx","qy","qz"])
-            print(f"[warn] TF orientation extraction failed: {e}")
-
-        # If ENU->base is missing and we fell back to map/odom, prefer ENU->imu_fallback_frame
-        enu_requested = _sanitize_frame(world_frame) == "enu_origin"
-        primary_is_world_fallback = (
-            used_tf_world
-            and enu_requested
-            and _sanitize_frame(used_tf_world) != _sanitize_frame(world_frame)
-        )
-
-        if primary_is_world_fallback and not df_q.empty and imu_fallback_frame:
-            # Keep the original (likely map-based) orientation with a _map suffix
-            df_q_map = df_q.rename(columns={
-                "qw": "qw_map",
-                "qx": "qx_map",
-                "qy": "qy_map",
-                "qz": "qz_map",
-            })
-            used_tf_world_map = used_tf_world
-            try:
-                df_q_alt, used_tf_world_alt = extract_base_orientation_from_tf(
-                    reader,
-                    world_frame,
-                    imu_fallback_frame,
-                    world_fallbacks=[],
-                )
-                if not df_q_alt.empty and _sanitize_frame(used_tf_world_alt or "") == _sanitize_frame(world_frame):
-                    df_q = df_q_alt
-                    used_tf_world = used_tf_world_alt
-                    base_frame_used = imu_fallback_frame
-                    imu_fallback_frame_used = imu_fallback_frame
-                    print(f"[info] Using ENU->{imu_fallback_frame} orientation as default; map/odom saved with _map suffix.")
-                else:
-                    print(f"[warn] ENU->{imu_fallback_frame} orientation not recovered; keeping map/odom fallback as default.")
-            except Exception as e:
-                print(f"[warn] ENU->{imu_fallback_frame} extraction failed; keeping map/odom fallback: {e}")
-
-        if used_tf_world and used_tf_world != world_frame:
-            print(f"[warn] TF world frame fallback: requested '{world_frame}' but using '{used_tf_world}'.")
-        if not used_tf_world and not df_q.empty:
-            used_tf_world = world_frame
-
-        # If TF is missing but odom is present, fall back to odom orientation
-        if df_q.empty and odom_df is not None and not odom_df.empty:
-            df_q = odom_df[["stamp_ns", "t", "qw", "qx", "qy", "qz"]].copy()
-            used_tf_world = "odom"
-            print("[warn] No TF-based orientation recovered; falling back to odom quaternion (world='odom').")
-
-        # If we used an IMU frame, rotate it into the requested base frame.
-        if (
-            imu_to_base_q is not None
-            and base_frame_used
-            and imu_fallback_frame
-            and _sanitize_frame(base_frame_used) == _sanitize_frame(imu_fallback_frame)
-            and _sanitize_frame(base_frame_used) != _sanitize_frame(base_frame)
-            and not df_q.empty
-        ):
-            df_q = _apply_quat_offset(df_q, imu_to_base_q, invert=True)
-            imu_correction_applied = True
-            base_frame_used = base_frame
-            print(f"[info] Applied IMU->base correction for frame '{imu_fallback_frame}'.")
-
-        # Attach map-based orientation (if present) alongside the default orientation
-        if not df_q.empty and not df_q_map.empty:
-            df_q = pd.merge_asof(
-                df_q.sort_values("stamp_ns"),
-                df_q_map[["stamp_ns", "qw_map", "qx_map", "qy_map", "qz_map"]].sort_values("stamp_ns"),
-                on="stamp_ns",
-                direction="nearest",
-            )
-        elif df_q.empty and not df_q_map.empty:
-            # Fall back entirely to the map-based orientation if nothing else exists
-            df_q = df_q_map.rename(columns={
-                "qw_map": "qw",
-                "qx_map": "qx",
-                "qy_map": "qy",
-                "qz_map": "qz",
-            })
-            used_tf_world = used_tf_world_map or used_tf_world
-
-        write_table(
-            "base_orientation",
-            df_q,
-            "base_orientation.parquet",
-            extra={
-                "world_frame": used_tf_world or world_frame,
-                "base_frame_requested": base_frame,
-                "base_frame_used": base_frame_used,
-                "map_world_frame": used_tf_world_map,
-                "imu_fallback_frame": imu_fallback_frame_used,
-                "imu_correction_applied": imu_correction_applied,
-            },
-            empty_msg="[warn] No TF-based orientation recovered (q_WB).",
-        )
-
-        topic_state = topics.get("anymal_state")
-        if topic_state:
-            try:
-                df_js = extract_anymal_state(reader, topic_state)
-                write_table(
-                    "joint_states",
-                    df_js,
-                    "joint_states.parquet",
-                    empty_msg=f"[info] No joint positions/velocities/torques extracted from {topic_state}.",
-                )
-            except Exception as e:
-                print(f"[warn] anymal_state extractor failed: {e}")
+        outputs = extract_tables(reader, topics, frames_cfg, out_dir, args.overwrite)
 
     # Save per-mission metadata
     topics_used = {
