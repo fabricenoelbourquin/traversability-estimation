@@ -23,6 +23,11 @@ def sh(cmd: list[str]) -> None:
 def yes(x) -> bool:
     return bool(x) and str(x).lower() not in {"0", "false", "no", "off"}
 
+def _tables_have_parquet(tables_dir: Path) -> bool:
+    if not tables_dir.exists():
+        return False
+    return any(tables_dir.glob("*.parquet"))
+
 # ---------- helpers for corruption handling ----------
 
 def _header_ok(p: Path) -> bool:
@@ -112,8 +117,10 @@ def _delete_files(files: list[Path]) -> None:
 
 def main():
     p = argparse.ArgumentParser(description="Run pipeline for a single mission (sequential).")
-    p.add_argument("--mission-id", type=str, required=False, help="Mission UUID (REQUIRED).")
-    p.add_argument("--mission-name", type=str, default=None, help="Optional alias (e.g., ETH-1).")
+    p.add_argument("--mission-id", type=str, required=False,
+                   help="Mission UUID (required unless mission-name is provided or configured).")
+    p.add_argument("--mission-name", type=str, default=None,
+                   help="Optional alias (e.g., ETH-1). Can be used without --mission-id if it exists.")
     p.add_argument("--config", type=str, default="config/pipeline.yaml", help="YAML config path")
     p.add_argument("--dataset-config", type=str, default=None, help="Dataset config path (override pipeline.yaml)")
     p.add_argument("--already-downloaded", action="store_true",
@@ -168,17 +175,24 @@ def main():
             cmd.append("--no-require-gps")
         return cmd
     
-    # ID required (from CLI or YAML)
+    # ID or name required (from CLI or YAML)
     mission_id = args.mission_id or cfg.get("mission_id")
     mission_name = args.mission_name or cfg.get("mission_name")
-    if not mission_id:
-        raise ValueError("Missing required --mission-id (or set mission_id in the YAML).")
+    if not mission_id and not mission_name:
+        raise ValueError("Missing required --mission-id or --mission-name (or set in the YAML).")
+    mission_ref = mission_id or mission_name
 
     P = get_paths()
 
     # Find the mission folder in RAW to scan/delete bad bags if needed
-    mp = resolve_mission(args.mission_id, P, mission_name=mission_name, allow_new=True)
+    allow_new = mission_id is not None
+    mp = resolve_mission(mission_ref, P, mission_name=mission_name, allow_new=allow_new)
     raw_dir, tables_dir, display_name = mp.raw, mp.tables, mp.display
+    mission_id = mp.mission_id
+    skip_extract_for_existing_parquet = (
+        not extract_overwrite
+        and _tables_have_parquet(tables_dir)
+    )
 
 
     # Helper: for stages that accept either --mission OR --mission-id (but not both)
@@ -192,7 +206,7 @@ def main():
     if metrics_only:
         print(">> Metrics-only mode enabled: skipping download/extract/sync and all post-metric stages.")
     skip_download = args.skip_download or args.already_downloaded or metrics_only
-    skip_extract  = args.skip_extract or metrics_only
+    skip_extract  = args.skip_extract or metrics_only or skip_extract_for_existing_parquet
     skip_sync     = args.skip_sync or metrics_only
     skip_swissimg = args.skip_swissimg or metrics_only
     skip_cluster  = args.skip_cluster or metrics_only
@@ -266,7 +280,14 @@ def main():
     if not skip_extract:
         _try_extract_with_self_heal()
     else:
-        print(">> Skipping extract (already-downloaded / skip-extract).")
+        reasons = []
+        if args.skip_extract:
+            reasons.append("--skip-extract")
+        if metrics_only:
+            reasons.append("metrics-only")
+        if skip_extract_for_existing_parquet:
+            reasons.append("parquet-exists")
+        print(">> Skipping extract (" + ", ".join(reasons or ["not requested"]) + ").")
 
     # Early GPS check after extraction (skip if gps.parquet missing/empty)    
     gps_parquet = tables_dir / "gps.parquet"

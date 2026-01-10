@@ -6,8 +6,9 @@ bags:
   camera: false
   depth: false
 
-# If true, force extract_bag.py to overwrite existing Parquets; if false, keep existing tables.
-overwrite_extract: true
+# If true, force extract_bag.py to overwrite existing Parquets; if false, skip extraction
+# when any Parquet already exists for the mission.
+overwrite_extract: false
 
 gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
@@ -19,7 +20,7 @@ dataset:
 visuals:
   enabled: true # bool to enable/disable all visuals
   timeseries:
-    enabled: t rue
+    enabled: true
     with_speeds: true    # include commanded and actual speed plots
     overlay_pitch: true   # overlay pitch angle on metrics
     plot_time: true       # activate time plot
