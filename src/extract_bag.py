@@ -306,25 +306,8 @@ def _quat_norm(q):
         return q
     return (w/n, x/n, y/n, z/n)
 
-def _rpy_deg_to_quat(roll_deg: float, pitch_deg: float, yaw_deg: float) -> tuple[float, float, float, float]:
-    roll = np.deg2rad(roll_deg)
-    pitch = np.deg2rad(pitch_deg)
-    yaw = np.deg2rad(yaw_deg)
-    cr = float(np.cos(roll * 0.5))
-    sr = float(np.sin(roll * 0.5))
-    cp = float(np.cos(pitch * 0.5))
-    sp = float(np.sin(pitch * 0.5))
-    cy = float(np.cos(yaw * 0.5))
-    sy = float(np.sin(yaw * 0.5))
-    qw = cr * cp * cy + sr * sp * sy
-    qx = sr * cp * cy - cr * sp * sy
-    qy = cr * sp * cy + sr * cp * sy
-    qz = cr * cp * sy - sr * sp * cy
-    return (qw, qx, qy, qz)
-
 def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float] | None:
     quat_cfg = frames_cfg.get("imu_to_base_quat")
-    rpy_cfg = frames_cfg.get("imu_to_base_rpy_deg")
     if quat_cfg is not None:
         try:
             qw, qx, qy, qz = (float(x) for x in quat_cfg)
@@ -332,13 +315,8 @@ def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float
             print("[warn] imu_to_base_quat must be a 4-element list [w, x, y, z].", file=sys.stderr)
             return None
         return _quat_norm((qw, qx, qy, qz))
-    if rpy_cfg is not None:
-        try:
-            roll_deg, pitch_deg, yaw_deg = (float(x) for x in rpy_cfg)
-        except Exception:
-            print("[warn] imu_to_base_rpy_deg must be a 3-element list [roll, pitch, yaw].", file=sys.stderr)
-            return None
-        return _quat_norm(_rpy_deg_to_quat(roll_deg, pitch_deg, yaw_deg))
+    if frames_cfg.get("imu_to_base_rpy_deg") is not None:
+        print("[warn] imu_to_base_rpy_deg is no longer supported; use imu_to_base_quat [w, x, y, z].", file=sys.stderr)
     return None
 
 def _apply_quat_offset(df: pd.DataFrame, q_offset: tuple[float, float, float, float], *, invert: bool) -> pd.DataFrame:
@@ -777,7 +755,7 @@ def extract_orientation_table(
         and not df_q.empty
     ):
         # Rotate IMU-frame orientation into the requested base frame.
-        df_q = _apply_quat_offset(df_q, frames_cfg.imu_to_base_q, invert=True)
+        df_q = _apply_quat_offset(df_q, frames_cfg.imu_to_base_q, invert=False)
         imu_correction_applied = True
         base_frame_used = frames_cfg.base
         print(f"[info] Applied IMU->base correction for frame '{frames_cfg.imu_fallback_frame}'.")

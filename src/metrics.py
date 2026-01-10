@@ -41,6 +41,23 @@ def _find_joint_columns(df: pd.DataFrame):
 def _nan_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series(np.nan, index=df.index)
 
+def _expand_mask_by_time(base_mask: np.ndarray, times: np.ndarray, padding_s: float) -> np.ndarray:
+    # Expand True regions of a boolean mask by padding_s seconds on each side.
+    if padding_s <= 0.0 or not np.any(base_mask):
+        return base_mask
+    padded = np.concatenate(([False], base_mask, [False]))
+    diffs = np.diff(padded.astype(int))
+    starts_idx = np.where(diffs == 1)[0]
+    ends_idx = np.where(diffs == -1)[0] - 1
+    out = np.zeros_like(base_mask, dtype=bool)
+    for start, end in zip(starts_idx, ends_idx):
+        t_start = times[start] - padding_s
+        t_end = times[end] + padding_s
+        new_start = np.searchsorted(times, t_start, side="left")
+        new_end = np.searchsorted(times, t_end, side="right")
+        out[new_start:new_end] = True
+    return out
+
 def _joint_power_terms(df: pd.DataFrame) -> pd.DataFrame | None:
     qd_cols, tau_cols = _find_joint_columns(df)
     if not qd_cols or not tau_cols:
@@ -257,6 +274,8 @@ def _cost_of_transport_from_power(df: pd.DataFrame, cfg: dict, power: pd.Series)
 
     too_slow_cmd = valid & (v_cmd_mag < min_speed_cmd)
     too_slow_actual = valid & (speed_mag < min_speed_actual)
+    if min_cmd_pad_s > 0.0 and "t" in df:
+        too_slow_cmd = _expand_mask_by_time(too_slow_cmd, df["t"].to_numpy(dtype=np.float64), min_cmd_pad_s)
 
     turn_only = np.zeros_like(valid)
     if turn_min_wz > 0.0 and "w_cmd_z" in d.columns:

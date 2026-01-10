@@ -36,6 +36,6 @@ frames:
     - odom
   # Optional: if ENU->base is missing, use ENU->imu and rotate into base frame.
   imu_fallback_frame: cpt7_imu
-  # Rotation from IMU frame to base frame (roll, pitch, yaw in degrees).
-  # Applied as: q_WB = q_WI * inv(q_imu_to_base).
-  imu_to_base_rpy_deg: [180, 0, 0]
+  # Rotation from IMU frame to base frame as quaternion [w, x, y, z].
+  # Applied as: q_WB = q_WI * q_imu_to_base.
+  imu_to_base_quat: [0.0, -1.0, 0.0, 0.0]

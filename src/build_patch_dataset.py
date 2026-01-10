@@ -895,6 +895,7 @@ def main():
     skipped_robot = 0
     skipped_dupe = 0
     skipped_contained = 0
+    skipped_time_subset = 0
     patch_idx = 0
 
     for seg in segments:
@@ -1127,7 +1128,26 @@ def main():
             continue
         filtered.append(r)
 
-    rows = filtered
+
+    # Drop patches whose time span is fully contained in an earlier patch (per mission),
+    # regardless of spatial offset, to avoid near-duplicate temporal coverage.
+    time_filtered: list[dict] = []
+    def _time_subset(inner: dict, outer: dict, tol: float = 1e-3) -> bool:
+        t0_in = float(inner.get("t_start", np.nan))
+        t1_in = float(inner.get("t_end", np.nan))
+        t0_out = float(outer.get("t_start", np.nan))
+        t1_out = float(outer.get("t_end", np.nan))
+        if not np.isfinite([t0_in, t1_in, t0_out, t1_out]).all():
+            return False
+        return (t0_in >= t0_out - tol) and (t1_in <= t1_out + tol)
+
+    for r in filtered:
+        if any(_time_subset(r, kept) for kept in time_filtered):
+            skipped_time_subset += 1
+            continue
+        time_filtered.append(r)
+
+    rows = time_filtered
 
     df_out = pd.DataFrame(rows).sort_values("patch_index").reset_index(drop=True)
 
@@ -1161,8 +1181,12 @@ def main():
     save_hdf(mp.mission_id, df_out, out_path, attrs, overwrite, compression)
 
     print(f"[ok] wrote {len(df_out)} patches -> {out_path}")
-    if skipped_edges or skipped_height or skipped_robot or skipped_dupe or skipped_contained:
-        print(f"[info] skipped (edges={skipped_edges}, height={skipped_height}, robot={skipped_robot}, dupes={skipped_dupe}, contained={skipped_contained})")
+    if (skipped_edges or skipped_height or skipped_robot or skipped_dupe
+            or skipped_contained or skipped_time_subset):
+        print("[info] skipped "
+              f"(edges={skipped_edges}, height={skipped_height}, robot={skipped_robot}, "
+              f"dupes={skipped_dupe}, contained={skipped_contained}, "
+              f"time_subset={skipped_time_subset})")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ metrics:
 
 output:
   path: null                  # default: <DATA_ROOT>/datasets
-  filename: "all_patches_{patch_size_m}m.h5"  # supports {patch_size_m} token
+  filename: "rigiblick_patches_{patch_size_m}m.h5"  # supports {patch_size_m} token
   compression: "gzip"
   overwrite_mission: true     # replace existing group for a mission
 

@@ -121,5 +121,5 @@ filters:
       window: 35
 
 robot:
-  mass_kg: 30.0      
+  mass_kg: 50.0      
   gravity: 9.81

@@ -7,31 +7,31 @@ bags:
   depth: false
 
 # If true, force extract_bag.py to overwrite existing Parquets; if false, keep existing tables.
-overwrite_extract: false
+overwrite_extract: true
 
 gps:
   required: false  # when false, run without GPS and skip GPS-dependent stages instead of dropping the bag
 
 dataset:
-  enabled: false
+  enabled: true
   config: "config/dataset.yaml"
 
 visuals:
-  enabled: false # bool to enable/disable all visuals
+  enabled: true # bool to enable/disable all visuals
   timeseries:
-    enabled: true
+    enabled: t rue
     with_speeds: true    # include commanded and actual speed plots
     overlay_pitch: true   # overlay pitch angle on metrics
     plot_time: true       # activate time plot
     plot_distance: true   # activate distance plot
 
   map:
-    enabled: true
+    enabled: false
     background: both      # swissimg | cluster | both
     emb_both: false
 
   dem3d:
-    enabled: true
+    enabled: false
     plot_trajectory: true   # if true, pipeline passes --plot-trajectory
 
   compare_dem_vs_quat_pitch_roll:
@@ -50,4 +50,4 @@ visuals:
       overlay_pitch: true
       shade_clusters: false
     dem_vs_quat_pitch_roll:
-      enabled: false
+      enabled: true
