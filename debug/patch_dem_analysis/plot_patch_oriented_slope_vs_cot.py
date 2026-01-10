@@ -59,6 +59,19 @@ def _default_dataset_path(patch_size_m: float | None) -> Path:
     return Path(get_paths()["DATASETS"]) / f"patches_{label}m.h5"
 
 
+def _resolve_dataset_path(dataset_arg: Path | None, patch_size_m: float | None) -> Path:
+    if dataset_arg is None:
+        return _default_dataset_path(patch_size_m)
+    dataset_path = Path(dataset_arg)
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.parent == Path("."):
+        if dataset_path.suffix == "":
+            dataset_path = dataset_path.with_suffix(".h5")
+        return Path(get_paths()["DATASETS"]) / dataset_path.name
+    return dataset_path
+
+
 def _patch_label(patch_size_m: float | None) -> str:
     size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
     label_num = f"{size:.3f}".rstrip("0").rstrip(".")
@@ -197,7 +210,10 @@ def main() -> None:
         "--dataset",
         type=Path,
         default=None,
-        help="Path to patch HDF5 dataset (default: DATASETS/patches_<patch-size>m.h5).",
+        help=(
+            "Path to patch HDF5 dataset. If a bare filename is provided, it is"
+            " resolved under DATASETS (default: DATASETS/patches_<patch-size>m.h5)."
+        ),
     )
     ap.add_argument(
         "--patch-size",
@@ -233,7 +249,7 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
+    dataset_path = _resolve_dataset_path(args.dataset, args.patch_size)
     patch_label = _patch_label(args.patch_size)
     default_out = DEFAULT_REPORT_DIR / patch_label / "patch_oriented_slope_vs_cot.png"
     dfs = _load_patch_groups(dataset_path, args.missions)

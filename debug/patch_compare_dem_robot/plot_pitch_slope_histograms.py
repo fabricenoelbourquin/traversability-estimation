@@ -70,6 +70,19 @@ def _default_dataset_path(patch_size_m: float | None) -> Path:
     return Path(get_paths()["DATASETS"]) / f"patches_{label}m.h5"
 
 
+def _resolve_dataset_path(dataset_arg: Path | None, patch_size_m: float | None) -> Path:
+    if dataset_arg is None:
+        return _default_dataset_path(patch_size_m)
+    dataset_path = Path(dataset_arg)
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.parent == Path("."):
+        if dataset_path.suffix == "":
+            dataset_path = dataset_path.with_suffix(".h5")
+        return Path(get_paths()["DATASETS"]) / dataset_path.name
+    return dataset_path
+
+
 def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[pd.DataFrame]:
     try:
         import h5py  # type: ignore
@@ -205,7 +218,10 @@ def main() -> None:
         "--dataset",
         type=Path,
         default=None,
-        help="Path to patch HDF5 dataset (default: DATASETS/patches_<patch-size>m.h5).",
+        help=(
+            "Path to patch HDF5 dataset. If a bare filename is provided, it is"
+            " resolved under DATASETS (default: DATASETS/patches_<patch-size>m.h5)."
+        ),
     )
     ap.add_argument(
         "--patch-size",
@@ -233,7 +249,7 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
+    dataset_path = _resolve_dataset_path(args.dataset, args.patch_size)
     patch_label = _patch_label(args.patch_size)
     base_out_dir = args.output_dir if args.output_dir is not None else DEFAULT_REPORT_DIR / patch_label
 

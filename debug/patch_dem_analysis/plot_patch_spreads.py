@@ -82,24 +82,28 @@ def _parse_patch_size(arg: str | None) -> float | None:
         return None
 
 
+def _infer_patch_size_from_name(name: str) -> float | None:
+    stem = Path(name).stem
+    for token in stem.split("_"):
+        if token.endswith("m"):
+            try:
+                return float(token[:-1])
+            except Exception:
+                continue
+    return None
+
+
 def _resolve_dataset_and_size(dataset_arg: str | None) -> tuple[Path, float | None]:
     if dataset_arg:
         p = Path(dataset_arg)
-        if p.exists():
-            # try to infer size from filename, else None
-            size = None
-            stem = p.stem
-            for token in stem.split("_"):
-                if token.endswith("m"):
-                    try:
-                        size = float(token[:-1])
-                        break
-                    except Exception:
-                        continue
-            return p, size
+        if p.is_absolute() or p.parent != Path("."):
+            return p, _infer_patch_size_from_name(p.name)
         size = _parse_patch_size(dataset_arg)
         if size is not None:
             return _default_dataset_path(size), size
+        if p.suffix == "":
+            p = p.with_suffix(".h5")
+        return Path(get_paths()["DATASETS"]) / p.name, _infer_patch_size_from_name(p.name)
     # fallback to default
     return _default_dataset_path(DEFAULT_PATCH_SIZE_M), DEFAULT_PATCH_SIZE_M
 
@@ -237,7 +241,10 @@ def main() -> None:
         "--dataset",
         type=str,
         default=None,
-        help="Patch size (e.g., '5' or '5m') or explicit dataset path. Default uses PATCH_SIZE constant.",
+        help=(
+            "Patch size (e.g., '5' or '5m'), bare dataset filename under DATASETS, or"
+            " explicit dataset path. Default uses PATCH_SIZE constant."
+        ),
     )
     ap.add_argument(
         "--missions",

@@ -129,6 +129,19 @@ def resolve_default_dataset_path(paths: dict) -> Path:
     return Path(out_dir) / fname
 
 
+def resolve_dataset_path(dataset_arg: Path | None, default_path: Path) -> Path:
+    if dataset_arg is None:
+        return default_path
+    dataset_path = Path(dataset_arg)
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.parent == Path("."):
+        if dataset_path.suffix == "":
+            dataset_path = dataset_path.with_suffix(".h5")
+        return default_path.parent / dataset_path.name
+    return dataset_path
+
+
 def load_patch_dataframe(h5_path: Path, missions: list[str] | None) -> tuple[pd.DataFrame, list[str]]:
     with h5py.File(h5_path, "r") as f:
         group_names = [k for k in f.keys() if isinstance(f[k], h5py.Group)]
@@ -262,7 +275,15 @@ def plot_orientation_comparison(
 
 def main():
     ap = argparse.ArgumentParser(description="Visualize patch dataset slopes and compare to robot bearing.")
-    ap.add_argument("dataset", nargs="?", type=Path, help="Path to the HDF5 produced by build_patch_dataset.py (default: config/dataset.yaml output)")
+    ap.add_argument(
+        "dataset",
+        nargs="?",
+        type=Path,
+        help=(
+            "Path to the HDF5 produced by build_patch_dataset.py. If a bare filename is"
+            " provided, it is resolved under the default dataset directory from config/dataset.yaml."
+        ),
+    )
     ap.add_argument("--mission", action="append", help="Mission/group name to analyze (repeatable). Default: all groups in the file.")
     ap.add_argument(
         "--out-dir",
@@ -274,7 +295,8 @@ def main():
     args = ap.parse_args()
 
     paths = get_paths()
-    dataset_path = args.dataset if args.dataset is not None else resolve_default_dataset_path(paths)
+    default_dataset_path = resolve_default_dataset_path(paths)
+    dataset_path = resolve_dataset_path(args.dataset, default_dataset_path)
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
     patch_label = _patch_label_from_dataset(dataset_path)

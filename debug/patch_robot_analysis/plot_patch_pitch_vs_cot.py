@@ -35,7 +35,7 @@ from utils.paths import get_paths
 
 
 DEFAULT_PATCH_SIZE_M: float = 5.0
-DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data"
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data" / "rigiblick"
 
 PITCH_COL = "pitch_deg_mean"
 COT_COL = "cot_patch"
@@ -61,6 +61,19 @@ def _default_dataset_path(patch_size_m: float | None) -> Path:
     size = DEFAULT_PATCH_SIZE_M if patch_size_m is None else patch_size_m
     label = f"{size:.3f}".rstrip("0").rstrip(".")
     return Path(get_paths()["DATASETS"]) / f"patches_{label}m.h5"
+
+
+def _resolve_dataset_path(dataset_arg: Path | None, patch_size_m: float | None) -> Path:
+    if dataset_arg is None:
+        return _default_dataset_path(patch_size_m)
+    dataset_path = Path(dataset_arg)
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.parent == Path("."):
+        if dataset_path.suffix == "":
+            dataset_path = dataset_path.with_suffix(".h5")
+        return Path(get_paths()["DATASETS"]) / dataset_path.name
+    return dataset_path
 
 
 def _load_patch_groups(h5_path: Path, missions: Sequence[str] | None) -> list[pd.DataFrame]:
@@ -143,7 +156,10 @@ def main() -> None:
         "--dataset",
         type=Path,
         default=None,
-        help="Path to patch HDF5 dataset (default: DATASETS/patches_<patch-size>m.h5).",
+        help=(
+            "Path to patch HDF5 dataset. If a bare filename is provided, it is"
+            " resolved under DATASETS (default: DATASETS/patches_<patch-size>m.h5)."
+        ),
     )
     ap.add_argument(
         "--patch-size",
@@ -184,7 +200,7 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    dataset_path = args.dataset if args.dataset is not None else _default_dataset_path(args.patch_size)
+    dataset_path = _resolve_dataset_path(args.dataset, args.patch_size)
     patch_label = _patch_label(args.patch_size)
     cot_col = COT_P95_COL if args.p95 else COT_COL
     default_name = "patch_pitch_vs_cot_p95.png" if args.p95 else "patch_pitch_vs_cot.png"
