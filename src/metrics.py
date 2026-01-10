@@ -167,12 +167,12 @@ def torque_L1_rate(df: pd.DataFrame, cfg: dict) -> pd.Series:
 @metric("power_mech")
 def power_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
-    Mechanical power usage [W]: sum_j |tau_j * qd_j| (no regen credit).
+    Mechanical power usage [W]: sum_j max(0, tau_j * qd_j) (no regen credit).
     """
     terms = _joint_power_terms(df)
     if terms is None:
         return _nan_series(df)
-    return terms.abs().sum(axis=1)
+    return terms.clip(lower=0.0).sum(axis=1)
 
 @metric("power_mech_signed")
 def power_mech_signed(df: pd.DataFrame, cfg: dict) -> pd.Series:
