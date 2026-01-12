@@ -294,7 +294,8 @@ def main():
     pitch_plot = None
     if args.overlay_pitch:
         try:
-            from video_metric_viewer import get_quaternion_block, normalize_quat_arrays, euler_zyx_from_qWB
+            from video_metric_viewer import get_quaternion_block, euler_zyx_from_qWB
+            from utils.quaternion import normalize_quat_arrays
 
             qw, qx, qy, qz = get_quaternion_block(df)
             qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)

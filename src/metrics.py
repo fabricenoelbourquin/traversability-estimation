@@ -70,7 +70,7 @@ def _joint_power_terms(df: pd.DataFrame) -> pd.DataFrame | None:
 
 def _get_motor_constants(cfg: dict) -> tuple[float, float, float] | None:
     """
-    Extract (R, k_t, G) from config. Returns None if any are missing or invalid.
+    Extract (R, k_t, G) from (private) config. Returns None if any are missing or invalid.
     Accepted keys inside cfg:
       - actuation / actuator / motor: containing keys R or resistance_ohm,
         k_t or torque_constant, and G or gear_ratio.
@@ -226,7 +226,7 @@ def cost_of_transport(df: pd.DataFrame, cfg: dict) -> pd.Series:
 @metric("cost_of_transport_mech")
 def cost_of_transport_mech(df: pd.DataFrame, cfg: dict) -> pd.Series:
     """
-    Cost of Transport using only mechanical power (legacy behavior).
+    Cost of Transport using only mechanical power.
     """
     return _cost_of_transport_from_power(df, cfg, REGISTRY["power_mech"](df, cfg))
 

@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet
 
 # ---------------- helpers ----------------
@@ -70,19 +71,6 @@ def rotate_dxdy(dx: np.ndarray, dy: np.ndarray, rot_deg: int) -> tuple[np.ndarra
         return dy, -dx
     else:
         raise ValueError("rot_deg must be one of {0,90,180,270}")
-
-def normalize_quat_arrays(qw, qx, qy, qz):
-    n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    n[n == 0.0] = 1.0
-    return qw/n, qx/n, qy/n, qz/n
-
-def rotate_vec_with_quat(qw, qx, qy, qz, vx, vy, vz):
-    """Vectorized rotation of v by unit quaternion q (active). Base->World."""
-    qv = np.stack([qx, qy, qz], axis=1)           # (N,3)
-    v  = np.tile(np.array([vx, vy, vz]), (len(qw), 1))
-    t  = 2.0 * np.cross(qv, v)
-    v2 = v + (qw[:, None] * t) + np.cross(qv, t)
-    return v2
 
 def rolling_smooth_angle(a: np.ndarray, win_median: int, win_mean: int) -> np.ndarray:
     """Unwrap -> rolling median -> rolling mean -> rewrap."""

@@ -15,6 +15,7 @@ dependencies = [
     "requests",
     "matplotlib",
     "Pillow",
+    "scipy",
     "rasterio",
     "pyproj",
     "shapely",

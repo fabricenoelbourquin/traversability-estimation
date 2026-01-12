@@ -35,6 +35,7 @@ from pyproj import Transformer
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet
 
 
@@ -46,19 +47,6 @@ def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
     if not cand_lat or not cand_lon:
         raise SystemExit(f"Couldn’t find lat/lon columns. Found: lat={cand_lat}, lon={cand_lon}")
     return cand_lat[0], cand_lon[0]
-
-def normalize_quat_arrays(qw, qx, qy, qz):
-    n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    n[n == 0.0] = 1.0
-    return qw/n, qx/n, qy/n, qz/n
-
-def rotate_vec_with_quat(qw, qx, qy, qz, vx, vy, vz):
-    """Vectorized rotation of v by unit quaternion q (active). Base->World."""
-    qv = np.stack([qx, qy, qz], axis=1)           # (N,3)
-    v  = np.tile(np.array([vx, vy, vz]), (len(qw), 1))
-    t  = 2.0 * np.cross(qv, v)
-    v2 = v + (qw[:, None] * t) + np.cross(qv, t)
-    return v2
 
 def world_to_rowcol(transform: Affine, x: np.ndarray, y: np.ndarray):
     a, _, c, _, e, f = transform.a, transform.b, transform.c, transform.d, transform.e, transform.f

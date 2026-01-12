@@ -40,6 +40,7 @@ from rosbags.image import message_to_cvimage
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.topics import load_topic_candidates
@@ -86,19 +87,6 @@ def guess_time_col(df: pd.DataFrame) -> str:
         if c in df.columns:
             return c
     raise KeyError("No time column found in parquet.")
-
-def normalize_quat_arrays(qw, qx, qy, qz):
-    n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    n[n == 0.0] = 1.0
-    return qw/n, qx/n, qy/n, qz/n
-
-def rotate_vec_with_quat(qw, qx, qy, qz, vx, vy, vz):
-    """Vectorized rotation of v by unit quaternion q (active). Base->World."""
-    qv = np.stack([qx, qy, qz], axis=1)
-    v  = np.tile(np.array([vx, vy, vz], dtype=np.float64), (len(qw), 1))
-    t  = 2.0 * np.cross(qv, v)
-    v2 = v + (qw[:, None] * t) + np.cross(qv, t)
-    return v2  # (N,3) world
 
 def build_compare_plot(times_s: np.ndarray, dem_deg: np.ndarray, quat_deg: np.ndarray,
                        y_label: str, width_px: int, height_px: int):

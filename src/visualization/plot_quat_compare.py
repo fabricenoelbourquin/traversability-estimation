@@ -19,24 +19,14 @@ import matplotlib.pyplot as plt
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, resolve_mission_from_args
+from utils.quaternion import euler_zyx_from_wxyz
 
 P = get_paths()
 
 
 def quat_to_rpy(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Quaternion (body->world) to roll, pitch, yaw (rad), Tait-Bryan XYZ."""
-    # roll
-    sinr_cosp = 2 * (qw * qx + qy * qz)
-    cosr_cosp = 1 - 2 * (qx * qx + qy * qy)
-    roll = np.arctan2(sinr_cosp, cosr_cosp)
-    # pitch
-    sinp = 2 * (qw * qy - qz * qx)
-    sinp = np.clip(sinp, -1.0, 1.0)
-    pitch = np.arcsin(sinp)
-    # yaw
-    siny_cosp = 2 * (qw * qz + qx * qy)
-    cosy_cosp = 1 - 2 * (qy * qy + qz * qz)
-    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    yaw, pitch, roll = euler_zyx_from_wxyz(qw, qx, qy, qz, degrees=False)
     return roll, pitch, yaw
 
 

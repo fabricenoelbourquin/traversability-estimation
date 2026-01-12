@@ -30,6 +30,7 @@ import yaml
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, resolve_mission_from_args
+from utils.quaternion import rotation_from_wxyz
 from utils.ros_time import header_stamp_ns, message_time_ns
 from utils.rosbag_tools import filter_valid_rosbags
 
@@ -285,26 +286,9 @@ def choose_topics(conns, topics_cfg: dict | None) -> dict[str, str]:
 def _sanitize_frame(name: str) -> str:
     return name[1:] if name.startswith("/") else name
 
-def _quat_mul(q1, q2):
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return (
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2,
-    )
-
-def _quat_conj(q):
-    w, x, y, z = q
-    return (w, -x, -y, -z)
-
-def _quat_norm(q):
-    w, x, y, z = q
-    n = float(np.sqrt(w*w + x*x + y*y + z*z))
-    if n == 0:
-        return q
-    return (w/n, x/n, y/n, z/n)
+def _rot_to_wxyz(rot) -> tuple[float, float, float, float]:
+    q_xyzw = rot.as_quat()
+    return (float(q_xyzw[3]), float(q_xyzw[0]), float(q_xyzw[1]), float(q_xyzw[2]))
 
 def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float] | None:
     quat_cfg = frames_cfg.get("imu_to_base_quat")
@@ -314,7 +298,7 @@ def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float
         except Exception:
             print("[warn] imu_to_base_quat must be a 4-element list [w, x, y, z].", file=sys.stderr)
             return None
-        return _quat_norm((qw, qx, qy, qz))
+        return _rot_to_wxyz(rotation_from_wxyz(qw, qx, qy, qz))
     if frames_cfg.get("imu_to_base_rpy_deg") is not None:
         print("[warn] imu_to_base_rpy_deg is no longer supported; use imu_to_base_quat [w, x, y, z].", file=sys.stderr)
     return None
@@ -322,21 +306,20 @@ def _load_imu_to_base_quat(frames_cfg: dict) -> tuple[float, float, float, float
 def _apply_quat_offset(df: pd.DataFrame, q_offset: tuple[float, float, float, float], *, invert: bool) -> pd.DataFrame:
     if df.empty:
         return df
-    if invert:
-        q_offset = _quat_conj(q_offset)
-    q_offset = _quat_norm(q_offset)
     qw = df["qw"].to_numpy(dtype=np.float64)
     qx = df["qx"].to_numpy(dtype=np.float64)
     qy = df["qy"].to_numpy(dtype=np.float64)
     qz = df["qz"].to_numpy(dtype=np.float64)
-    w2, x2, y2, z2 = q_offset
-    w = qw * w2 - qx * x2 - qy * y2 - qz * z2
-    x = qw * x2 + qx * w2 + qy * z2 - qz * y2
-    y = qw * y2 - qx * z2 + qy * w2 + qz * x2
-    z = qw * z2 + qx * y2 - qy * x2 + qz * w2
-    n = np.sqrt(w * w + x * x + y * y + z * z)
-    n[n == 0.0] = 1.0
-    w, x, y, z = w / n, x / n, y / n, z / n
+    rot = rotation_from_wxyz(qw, qx, qy, qz)
+    rot_offset = rotation_from_wxyz(*q_offset)
+    if invert:
+        rot_offset = rot_offset.inv()
+    rot_out = rot * rot_offset
+    q_xyzw = rot_out.as_quat()
+    w = q_xyzw[:, 3]
+    x = q_xyzw[:, 0]
+    y = q_xyzw[:, 1]
+    z = q_xyzw[:, 2]
     neg = w < 0.0
     w[neg], x[neg], y[neg], z[neg] = -w[neg], -x[neg], -y[neg], -z[neg]
     out = df.copy()
@@ -505,16 +488,18 @@ def extract_base_orientation_from_tf(
             node = prev[node]
         path.reverse()
         # Multiply quaternions along the path to build the world->base orientation.
-        q_total = (1.0, 0.0, 0.0, 0.0)
+        rot_total = rotation_from_wxyz(1.0, 0.0, 0.0, 0.0)
         for frm, to in zip(path[:-1], path[1:]):
             hop = latest.get((frm, to))
             if hop is None:
                 reverse = latest.get((to, frm))
                 if reverse is None:
                     return None
-                hop = _quat_conj(reverse)
-            q_total = _quat_mul(q_total, hop)
-        q_total = _quat_norm(q_total)
+                hop_rot = rotation_from_wxyz(*reverse).inv()
+            else:
+                hop_rot = rotation_from_wxyz(*hop)
+            rot_total = rot_total * hop_rot
+        q_total = _rot_to_wxyz(rot_total)
         if q_total[0] < 0.0:
             q_total = tuple(-c for c in q_total)
         return q_total

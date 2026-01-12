@@ -25,6 +25,7 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
+from utils.quaternion import euler_zyx_from_wxyz
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -56,30 +57,9 @@ def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.
     raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
 
 
-def _normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    n[n == 0.0] = 1.0
-    return qw / n, qx / n, qy / n, qz / n
-
-
 def _euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert unit quaternion q_WB to yaw/pitch/roll (ZYX ordering) in degrees."""
-    qw, qx, qy, qz = _normalize_quat_arrays(qw, qx, qy, qz)
-
-    xx = qx * qx; yy = qy * qy; zz = qz * qz
-    xy = qx * qy; xz = qx * qz; yz = qy * qz
-    wx = qw * qx; wy = qw * qy; wz = qw * qz
-
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r10 = 2.0 * (xy + wz)
-    r20 = 2.0 * (xz - wy)
-    r21 = 2.0 * (yz + wx)
-    r22 = 1.0 - 2.0 * (xx + yy)
-
-    yaw = np.arctan2(r10, r00)
-    pitch = np.arctan2(-r20, np.clip(np.sqrt(r00 * r00 + r10 * r10), 1e-12, None))
-    roll = np.arctan2(r21, r22)
-    return np.rad2deg(yaw), np.rad2deg(pitch), np.rad2deg(roll)
+    return euler_zyx_from_wxyz(qw, qx, qy, qz, degrees=True)
 
 
 def _compute_pitch_deg(df: pd.DataFrame) -> np.ndarray:

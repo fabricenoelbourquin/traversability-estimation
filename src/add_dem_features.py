@@ -20,6 +20,7 @@ from pyproj import Transformer
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.quaternion import yaw_from_wxyz
 from utils.synced import resolve_synced_parquet
 
 
@@ -181,24 +182,12 @@ def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.n
     return None
 
 
-def normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray
-                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    n[n == 0.0] = 1.0
-    return qw / n, qx / n, qy / n, qz / n
-
-
 def compute_yaw_rad(df: pd.DataFrame) -> np.ndarray | None:
     """Extract per-sample yaw [rad] from body->world quaternions (ENU frame)."""
     block = get_quaternion_block(df)
     if block is None:
         return None
-    qw, qx, qy, qz = normalize_quat_arrays(*block)
-    yy = qy * qy; zz = qz * qz
-    xy = qx * qy; wz = qw * qz
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r10 = 2.0 * (xy + wz)
-    return np.arctan2(r10, r00)
+    return yaw_from_wxyz(*block)
 
 
 def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:

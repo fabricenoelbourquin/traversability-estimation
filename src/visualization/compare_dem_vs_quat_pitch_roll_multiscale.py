@@ -24,6 +24,7 @@ from pyproj import Transformer
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet
+from utils.quaternion import euler_zyx_from_wxyz
 
 from add_dem_features import (
     load_yaml,
@@ -42,7 +43,6 @@ from add_dem_features import (
 from build_patch_dataset import (
     compute_pitch_deg,
     get_quaternion_block,
-    normalize_quat_arrays,
 )
 
 
@@ -54,13 +54,8 @@ def compute_roll_deg(df: pd.DataFrame) -> np.ndarray | None:
     block = get_quaternion_block(df)
     if block is None:
         return None
-    qw, qx, qy, qz = normalize_quat_arrays(*block)
-    xx = qx * qx; yy = qy * qy; zz = qz * qz
-    yz = qy * qz; wx = qw * qx
-    r21 = 2.0 * (yz + wx)
-    r22 = 1.0 - 2.0 * (xx + yy)
-    roll = np.arctan2(r21, r22)
-    return np.rad2deg(roll)
+    _, _, roll_deg = euler_zyx_from_wxyz(*block, degrees=True)
+    return roll_deg
 
 
 def wrap_angle_rad(a: np.ndarray) -> np.ndarray:

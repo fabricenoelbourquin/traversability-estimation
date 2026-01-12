@@ -29,6 +29,7 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.filtering import load_metrics_config
+from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays, yaw_from_wxyz
 
 
 # -------------------------- helpers --------------------------
@@ -255,9 +256,8 @@ def average_quaternion(df: pd.DataFrame) -> tuple[float, float, float, float]:
             sub = df[list(cols)].dropna().to_numpy(dtype=float)
             if len(sub) == 0:
                 continue
-            norms = np.linalg.norm(sub, axis=1, keepdims=True)
-            norms[norms == 0.0] = 1.0
-            q = sub / norms
+            qw, qx, qy, qz = normalize_quat_arrays(sub[:, 0], sub[:, 1], sub[:, 2], sub[:, 3])
+            q = np.column_stack([qw, qx, qy, qz])
             base = q[0]
             aligned = []
             for qi in q:
@@ -287,13 +287,6 @@ def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.n
     return None
 
 
-def normalize_quat_arrays(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray
-                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    n = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    n[n == 0.0] = 1.0
-    return qw / n, qx / n, qy / n, qz / n
-
-
 def compute_pitch_deg(df: pd.DataFrame) -> np.ndarray | None:
     """
     Compute pitch [deg] from body->world quaternions.
@@ -302,18 +295,7 @@ def compute_pitch_deg(df: pd.DataFrame) -> np.ndarray | None:
     block = get_quaternion_block(df)
     if block is None:
         return None
-    qw, qx, qy, qz = normalize_quat_arrays(*block)
-
-    xx = qx * qx; yy = qy * qy; zz = qz * qz
-    xy = qx * qy; xz = qx * qz; yz = qy * qz
-    wx = qw * qx; wy = qw * qy; wz = qw * qz
-
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r10 = 2.0 * (xy + wz)
-    r20 = 2.0 * (xz - wy)
-
-    pitch = np.arctan2(-r20, np.clip(np.sqrt(r00 * r00 + r10 * r10), 1e-12, None))
-    pitch_deg = np.rad2deg(pitch)
+    _, pitch_deg, _ = euler_zyx_from_wxyz(*block, degrees=True)
     return -pitch_deg  # flip axis so nose-up is positive
 
 
@@ -321,18 +303,7 @@ def yaw_from_quaternion(qw: float, qx: float, qy: float, qz: float) -> float:
     """Extract yaw [rad] from a single quaternion (body→world), ENU frame."""
     if not all(np.isfinite([qw, qx, qy, qz])):
         return float("nan")
-    qw, qx, qy, qz = normalize_quat_arrays(
-        np.array([qw], dtype=np.float64),
-        np.array([qx], dtype=np.float64),
-        np.array([qy], dtype=np.float64),
-        np.array([qz], dtype=np.float64),
-    )
-    qw = float(qw[0]); qx = float(qx[0]); qy = float(qy[0]); qz = float(qz[0])
-    xx = qx * qx; yy = qy * qy; zz = qz * qz
-    xy = qx * qy; wz = qw * qz
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r10 = 2.0 * (xy + wz)
-    return float(math.atan2(r10, r00))
+    return float(yaw_from_wxyz(qw, qx, qy, qz))
 
 
 def aggregate_dem_pitch_roll_from_samples(df_patch: pd.DataFrame, scales_m: list[float]) -> dict[str, float]:

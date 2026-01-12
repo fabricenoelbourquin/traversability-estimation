@@ -33,6 +33,7 @@ from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
 from utils.topics import load_topic_candidates
+from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -177,56 +178,13 @@ def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.n
         raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
 
 
-def normalize_quat_arrays(qw, qx, qy, qz):
-    n = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    n[n == 0.0] = 1.0
-    return qw/n, qx/n, qy/n, qz/n
-
-
-def rotate_vec_with_quat(qw, qx, qy, qz, vx, vy, vz):
-    """Vectorized rotation of v by unit quaternion q (active). Base->World."""
-    qv = np.stack([qx, qy, qz], axis=1)           # (N,3)
-    v  = np.tile(np.array([vx, vy, vz], dtype=np.float64), (len(qw), 1))
-    t  = 2.0 * np.cross(qv, v)
-    v2 = v + (qw[:, None] * t) + np.cross(qv, t)
-    return v2  # (N,3) world
-
-
 def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert quaternion q_WB (body→world, active) to yaw-pitch-roll (ZYX) in degrees.
     World: ENU. Body: x-forward, y-left, z-up.
     Returns navigation-friendly yaw/pitch (north = 0°, clockwise yaw positive, nose-up pitch positive).
     """
-    # ensure unit quaternions
-    qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
-
-    # rotation matrix R_WB (maps body vectors into world)
-    # vectorized components
-    xx = qx * qx; yy = qy * qy; zz = qz * qz
-    xy = qx * qy; xz = qx * qz; yz = qy * qz
-    wx = qw * qx; wy = qw * qy; wz = qw * qz
-
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r01 = 2.0 * (xy - wz)
-    r02 = 2.0 * (xz + wy)
-
-    r10 = 2.0 * (xy + wz)
-    r11 = 1.0 - 2.0 * (xx + zz)
-    r12 = 2.0 * (yz - wx)
-
-    r20 = 2.0 * (xz - wy)
-    r21 = 2.0 * (yz + wx)
-    r22 = 1.0 - 2.0 * (xx + yy)
-
-    # ZYX extraction (yaw about +Z, pitch about +Y, roll about +X)
-    yaw   = np.arctan2(r10, r00)
-    pitch = np.arctan2(-r20, np.clip(np.sqrt(r00*r00 + r10*r10), 1e-12, None))
-    roll  = np.arctan2(r21, r22)
-
-    yaw_deg = np.rad2deg(yaw)
-    pitch_deg = np.rad2deg(pitch)
-    roll_deg = np.rad2deg(roll)
+    yaw_deg, pitch_deg, roll_deg = euler_zyx_from_wxyz(qw, qx, qy, qz, degrees=True)
 
     # Align with intuitive navigation convention (clockwise heading, nose-up positive).
     yaw_deg *= -1.0
