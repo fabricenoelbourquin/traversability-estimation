@@ -37,7 +37,7 @@ from utils.paths import get_paths
 
 
 DEFAULT_PATCH_SIZE_M: float = 5.0
-DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_dem_data" / "rigiblick"
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_dem_data" / "all"
 
 COT_COL = "cot_patch"
 COT_P95_COL = "cot_patch_p95"

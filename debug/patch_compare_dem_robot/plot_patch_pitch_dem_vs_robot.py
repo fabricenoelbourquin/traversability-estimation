@@ -37,7 +37,7 @@ from utils.paths import get_paths  # noqa: E402
 
 
 DEFAULT_PATCH_SIZE_M: float = 5.0
-DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_compare_dem_robot" / "rigiblick"
+DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_compare_dem_robot" / "all"
 
 PITCH_ROBOT_COL = "pitch_deg_mean"
 
