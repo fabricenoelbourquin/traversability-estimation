@@ -20,6 +20,7 @@ from pyproj import Transformer
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.filtering import build_dem_pitch_roll_chain, filter_signal
 from utils.quaternion import yaw_from_wxyz
 from utils.synced import resolve_synced_parquet
 
@@ -190,100 +191,6 @@ def compute_yaw_rad(df: pd.DataFrame) -> np.ndarray | None:
     return yaw_from_wxyz(*block)
 
 
-def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:
-    if window <= 1 or arr.size == 0:
-        return arr.astype(np.float64, copy=True)
-    return (
-        pd.Series(arr)
-        .rolling(window=window, center=True, min_periods=1)
-        .median()
-        .to_numpy(dtype=np.float64)
-    )
-
-
-def mad_outlier_reject(arr: np.ndarray, z_thresh: float = 3.5) -> np.ndarray:
-    out = arr.astype(np.float64, copy=True)
-    finite = out[np.isfinite(out)]
-    if finite.size < 3:
-        return out
-    med = float(np.median(finite))
-    mad = float(np.median(np.abs(finite - med)))
-    if not np.isfinite(mad) or mad <= 0.0:
-        return out
-    z = 0.6745 * (out - med) / mad
-    out[np.abs(z) > z_thresh] = np.nan
-    return out
-
-def gaussian_kernel_1d(sigma: float, radius: int) -> np.ndarray:
-    if sigma <= 0.0 or radius <= 0:
-        return np.array([1.0], dtype=np.float64)
-    x = np.arange(-radius, radius + 1, dtype=np.float64)
-    kernel = np.exp(-(x * x) / (2.0 * sigma * sigma))
-    ksum = float(np.sum(kernel))
-    if not np.isfinite(ksum) or ksum <= 0.0:
-        return np.array([1.0], dtype=np.float64)
-    return (kernel / ksum).astype(np.float64)
-
-
-def gaussian_smooth_1d_nan(arr: np.ndarray, sigma: float, window: int | None = None) -> np.ndarray:
-    """Gaussian smooth with NaN-aware normalization."""
-    if arr.size == 0 or not np.isfinite(sigma) or sigma <= 0.0:
-        return arr.astype(np.float64, copy=True)
-    if window is None:
-        radius = int(round(3.0 * sigma))
-    else:
-        radius = int(max(1, window // 2))
-    kernel = gaussian_kernel_1d(sigma, radius)
-    pad = radius
-    values = arr.astype(np.float64, copy=True)
-    mask = np.isfinite(values).astype(np.float64)
-    values[~np.isfinite(values)] = 0.0
-
-    values_pad = np.pad(values, pad, mode="reflect")
-    mask_pad = np.pad(mask, pad, mode="reflect")
-    num = np.convolve(values_pad, kernel, mode="valid")
-    den = np.convolve(mask_pad, kernel, mode="valid")
-    out = num / np.clip(den, 1e-12, None)
-    out[den == 0.0] = np.nan
-    return out.astype(np.float64)
-
-
-def rate_limit_angles(angle_deg: np.ndarray, t_s: np.ndarray, max_rate_deg_s: float) -> np.ndarray:
-    """Clamp per-sample changes to a maximum rate (deg/s)."""
-    out = angle_deg.astype(np.float64, copy=True)
-    if out.size == 0 or not np.isfinite(max_rate_deg_s) or max_rate_deg_s <= 0.0:
-        return out
-    dt = np.diff(t_s, prepend=t_s[0])
-    for i in range(1, len(out)):
-        if not np.isfinite(out[i]) or not np.isfinite(out[i - 1]) or not np.isfinite(dt[i]):
-            continue
-        if dt[i] <= 0.0:
-            continue
-        max_delta = max_rate_deg_s * dt[i]
-        delta = out[i] - out[i - 1]
-        if delta > max_delta:
-            out[i] = out[i - 1] + max_delta
-        elif delta < -max_delta:
-            out[i] = out[i - 1] - max_delta
-    return out
-
-
-def despike_hampel(angle_deg: np.ndarray, window: int, z_thresh: float) -> np.ndarray:
-    """Replace spikes using a Hampel filter (rolling median + MAD)."""
-    if window <= 1 or angle_deg.size == 0:
-        return angle_deg.astype(np.float64, copy=True)
-    series = pd.Series(angle_deg)
-    med = series.rolling(window=window, center=True, min_periods=1).median()
-    mad = (series - med).abs().rolling(window=window, center=True, min_periods=1).median()
-    mad = mad.replace(0.0, np.nan)
-    z = 0.6745 * (series - med) / mad
-    out = series.to_numpy(dtype=np.float64)
-    z_vals = z.to_numpy(dtype=np.float64)
-    med_vals = med.to_numpy(dtype=np.float64)
-    out[np.abs(z_vals) > z_thresh] = med_vals[np.abs(z_vals) > z_thresh]
-    return out
-
-
 def parse_dem_pitch_roll_cfg(cfg: dict) -> dict:
     dem_cfg = cfg.get("dem_pitch_roll")
     if not isinstance(dem_cfg, dict):
@@ -303,27 +210,35 @@ def parse_dem_pitch_roll_cfg(cfg: dict) -> dict:
     if not scales_m:
         raise SystemExit("'dem_pitch_roll.smooth_scales_m' must contain positive finite values.")
 
-    if "smooth_window" not in dem_cfg:
-        raise SystemExit("Missing 'dem_pitch_roll.smooth_window' in metrics config.")
-    smooth_window = int(dem_cfg.get("smooth_window"))
-    if smooth_window < 1:
-        raise SystemExit("'dem_pitch_roll.smooth_window' must be >= 1.")
+    filter_params = dem_cfg.get("filter_params")
+    if not isinstance(filter_params, dict):
+        filter_params = {}
 
-    if "mad_z_thresh" not in dem_cfg:
-        raise SystemExit("Missing 'dem_pitch_roll.mad_z_thresh' in metrics config.")
-    mad_z_thresh = float(dem_cfg.get("mad_z_thresh"))
+    if "smooth_window" not in filter_params:
+        raise SystemExit("Missing 'dem_pitch_roll.filter_params.smooth_window' in metrics config.")
+    smooth_window = int(filter_params.get("smooth_window"))
+    if smooth_window < 1:
+        raise SystemExit("'dem_pitch_roll.filter_params.smooth_window' must be >= 1.")
+
+    if "mad_z_thresh" not in filter_params:
+        raise SystemExit("Missing 'dem_pitch_roll.filter_params.mad_z_thresh' in metrics config.")
+    mad_z_thresh = float(filter_params.get("mad_z_thresh"))
     if not np.isfinite(mad_z_thresh) or mad_z_thresh <= 0.0:
-        raise SystemExit("'dem_pitch_roll.mad_z_thresh' must be > 0.")
+        raise SystemExit("'dem_pitch_roll.filter_params.mad_z_thresh' must be > 0.")
+
+    filter_params = {
+        "smooth_window": smooth_window,
+        "mad_z_thresh": mad_z_thresh,
+        "rate_hampel_filter": bool(filter_params.get("rate_hampel_filter", False)),
+        "rate_hampel_max_rate": float(filter_params.get("rate_hampel_max_rate", 0.0)),
+        "rate_hampel_window": int(filter_params.get("rate_hampel_window", 0)),
+        "rate_hampel_z": float(filter_params.get("rate_hampel_z", 0.0)),
+        "value_gauss_sigma": float(filter_params.get("value_gauss_sigma", 0.0)),
+    }
 
     return {
         "smooth_scales_m": scales_m,
-        "smooth_window": smooth_window,
-        "mad_z_thresh": mad_z_thresh,
-        "rate_hampel_filter": bool(dem_cfg.get("rate_hampel_filter", False)),
-        "rate_hampel_max_rate": float(dem_cfg.get("rate_hampel_max_rate", 0.0)),
-        "rate_hampel_window": int(dem_cfg.get("rate_hampel_window", 0)),
-        "rate_hampel_z": float(dem_cfg.get("rate_hampel_z", 0.0)),
-        "value_gauss_sigma": float(dem_cfg.get("value_gauss_sigma", 0.0)),
+        "filter_params": filter_params,
     }
 
 
@@ -343,6 +258,8 @@ def main() -> None:
     metrics_cfg = load_yaml(Path(args.metrics_config))
     dem_cfg = parse_dem_pitch_roll_cfg(metrics_cfg)
     scales_m = dem_cfg["smooth_scales_m"]
+    filter_chain = build_dem_pitch_roll_chain(dem_cfg["filter_params"])
+    dem_filters_cfg = {"dem_pitch_roll": {"chain": filter_chain}}
 
     dataset_cfg = load_yaml(Path(args.dataset_config))
     input_cfg = dataset_cfg.get("inputs", {})
@@ -393,6 +310,7 @@ def main() -> None:
     t = df["t"].to_numpy(dtype=float)
     cos_yaw = np.cos(yaw)
     sin_yaw = np.sin(yaw)
+    filter_context = {"t_s": t}
 
     out = pd.DataFrame({"t": t})
     for scale_m in scales_m:
@@ -410,20 +328,18 @@ def main() -> None:
         pitch_deg = np.rad2deg(np.arctan(s_parallel))
         roll_deg = np.rad2deg(np.arctan(s_perp))
 
-        pitch_deg = rolling_median(pitch_deg, dem_cfg["smooth_window"])
-        roll_deg = rolling_median(roll_deg, dem_cfg["smooth_window"])
-        pitch_deg = mad_outlier_reject(pitch_deg, dem_cfg["mad_z_thresh"])
-        roll_deg = mad_outlier_reject(roll_deg, dem_cfg["mad_z_thresh"])
-
-        if dem_cfg["rate_hampel_filter"]:
-            pitch_deg = despike_hampel(pitch_deg, dem_cfg["rate_hampel_window"], dem_cfg["rate_hampel_z"])
-            roll_deg = despike_hampel(roll_deg, dem_cfg["rate_hampel_window"], dem_cfg["rate_hampel_z"])
-            pitch_deg = rate_limit_angles(pitch_deg, t, dem_cfg["rate_hampel_max_rate"])
-            roll_deg = rate_limit_angles(roll_deg, t, dem_cfg["rate_hampel_max_rate"])
-
-        if dem_cfg["value_gauss_sigma"] and dem_cfg["value_gauss_sigma"] > 0.0:
-            pitch_deg = gaussian_smooth_1d_nan(pitch_deg, dem_cfg["value_gauss_sigma"], None)
-            roll_deg = gaussian_smooth_1d_nan(roll_deg, dem_cfg["value_gauss_sigma"], None)
+        pitch_deg = filter_signal(
+            pitch_deg,
+            "dem_pitch_roll",
+            filters_cfg=dem_filters_cfg,
+            context=filter_context,
+        )
+        roll_deg = filter_signal(
+            roll_deg,
+            "dem_pitch_roll",
+            filters_cfg=dem_filters_cfg,
+            context=filter_context,
+        )
 
         label = format_dem_scale_label(scale_m)
         out[f"dem_pitch_{label}_deg"] = pitch_deg

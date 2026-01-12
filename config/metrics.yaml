@@ -33,13 +33,14 @@ dem_pitch_roll:
   # DEM pitch/roll along trajectory, computed once per sample and aggregated per patch.
   # pitch and roll are calculated from smoothed DEM gradients and bilinear interpolation along trajectory, filtered and averaged to add to dataset.
   smooth_scales_m: [0.5, 1.5, 3.5]  # Gaussian sigma in meters (converted to pixels via DEM resolution)
-  smooth_window: 5                 # rolling median window for pitch/roll samples
-  mad_z_thresh: 3.5                # global MAD z-score outlier rejection (on entire traj)
-  rate_hampel_filter: true         # enable spike suppression on DEM pitch/roll values
-  rate_hampel_max_rate: 5.0        # max pitch/roll rate [deg/s] for spike suppression
-  rate_hampel_window: 101          # Hampel filter window (samples)
-  rate_hampel_z: 2.0               # Hampel MAD z-threshold
-  value_gauss_sigma: 10.0          # Gaussian smoothing sigma (samples) for values
+  filter_params:
+    smooth_window: 5                 # rolling median window for pitch/roll samples
+    mad_z_thresh: 3.5                # global MAD z-score outlier rejection (on entire traj)
+    rate_hampel_filter: true         # enable spike suppression on DEM pitch/roll values
+    rate_hampel_max_rate: 5.0        # max pitch/roll rate [deg/s] for spike suppression
+    rate_hampel_window: 101          # Hampel filter window (samples)
+    rate_hampel_z: 2.0               # Hampel MAD z-threshold
+    value_gauss_sigma: 10.0          # Gaussian smoothing sigma (samples) for values
 
 robot:
   mass_kg: 50.0      

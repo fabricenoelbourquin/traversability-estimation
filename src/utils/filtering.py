@@ -11,6 +11,7 @@ import yaml
 
 
 FilterStage = Mapping[str, Any]
+FilterContext = Mapping[str, Any] | None
 
 
 @dataclass
@@ -39,19 +40,19 @@ def _rolling(series: pd.Series, stage: FilterStage, method: str) -> pd.Series:
     return getattr(rolled, method)()
 
 
-def _moving_average(values: np.ndarray, stage: FilterStage) -> np.ndarray:
+def _moving_average(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
     """ Apply Moving Average to the input values. """
     series = pd.Series(values)
     return _rolling(series, stage, method="mean").to_numpy()
 
 
-def _moving_median(values: np.ndarray, stage: FilterStage) -> np.ndarray:
+def _moving_median(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
     """ Apply Moving Median to the input values. """
     series = pd.Series(values)
     return _rolling(series, stage, method="median").to_numpy()
 
 
-def _ema(values: np.ndarray, stage: FilterStage) -> np.ndarray:
+def _ema(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
     """ Apply Exponential Moving Average (EMA) to the input values. """
     alpha = float(stage.get("alpha", 0.3))
     if not (0.0 < alpha <= 1.0):
@@ -62,7 +63,7 @@ def _ema(values: np.ndarray, stage: FilterStage) -> np.ndarray:
     return series.ewm(alpha=alpha, adjust=adjust, min_periods=min_periods).mean().to_numpy()
 
 
-def _hampel(values: np.ndarray, stage: FilterStage) -> np.ndarray:
+def _hampel(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
     """
     Hampel filter: rolling median with MAD-based outlier replacement.
     Points with |x - median| > k * MAD are replaced by the median.
@@ -86,6 +87,124 @@ def _hampel(values: np.ndarray, stage: FilterStage) -> np.ndarray:
     return out.to_numpy()
 
 
+def rolling_median(values: np.ndarray, window: int) -> np.ndarray:
+    if window <= 1 or values.size == 0:
+        return values.astype(np.float64, copy=True)
+    return (
+        pd.Series(values)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy(dtype=np.float64)
+    )
+
+
+def mad_outlier_reject(values: np.ndarray, z_thresh: float = 3.5) -> np.ndarray:
+    out = values.astype(np.float64, copy=True)
+    finite = out[np.isfinite(out)]
+    if finite.size < 3:
+        return out
+    med = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - med)))
+    if not np.isfinite(mad) or mad <= 0.0:
+        return out
+    z = 0.6745 * (out - med) / mad
+    out[np.abs(z) > z_thresh] = np.nan
+    return out
+
+
+def gaussian_kernel_1d(sigma: float, radius: int) -> np.ndarray:
+    if sigma <= 0.0 or radius <= 0:
+        return np.array([1.0], dtype=np.float64)
+    x = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-(x * x) / (2.0 * sigma * sigma))
+    ksum = float(np.sum(kernel))
+    if not np.isfinite(ksum) or ksum <= 0.0:
+        return np.array([1.0], dtype=np.float64)
+    return (kernel / ksum).astype(np.float64)
+
+
+def gaussian_smooth_1d_nan(arr: np.ndarray, sigma: float, window: int | None = None) -> np.ndarray:
+    """Gaussian smooth with NaN-aware normalization."""
+    if arr.size == 0 or not np.isfinite(sigma) or sigma <= 0.0:
+        return arr.astype(np.float64, copy=True)
+    if window is None:
+        radius = int(round(3.0 * sigma))
+    else:
+        radius = int(max(1, window // 2))
+    kernel = gaussian_kernel_1d(sigma, radius)
+    pad = radius
+    values = arr.astype(np.float64, copy=True)
+    mask = np.isfinite(values).astype(np.float64)
+    values[~np.isfinite(values)] = 0.0
+
+    values_pad = np.pad(values, pad, mode="reflect")
+    mask_pad = np.pad(mask, pad, mode="reflect")
+    num = np.convolve(values_pad, kernel, mode="valid")
+    den = np.convolve(mask_pad, kernel, mode="valid")
+    out = num / np.clip(den, 1e-12, None)
+    out[den == 0.0] = np.nan
+    return out.astype(np.float64)
+
+
+def rate_limit_angles(angle_deg: np.ndarray, t_s: np.ndarray, max_rate_deg_s: float) -> np.ndarray:
+    """Clamp per-sample changes to a maximum rate (deg/s)."""
+    out = angle_deg.astype(np.float64, copy=True)
+    if out.size == 0 or not np.isfinite(max_rate_deg_s) or max_rate_deg_s <= 0.0:
+        return out
+    dt = np.diff(t_s, prepend=t_s[0])
+    for i in range(1, len(out)):
+        if not np.isfinite(out[i]) or not np.isfinite(out[i - 1]) or not np.isfinite(dt[i]):
+            continue
+        if dt[i] <= 0.0:
+            continue
+        max_delta = max_rate_deg_s * dt[i]
+        delta = out[i] - out[i - 1]
+        if delta > max_delta:
+            out[i] = out[i - 1] + max_delta
+        elif delta < -max_delta:
+            out[i] = out[i - 1] - max_delta
+    return out
+
+
+def despike_hampel(angle_deg: np.ndarray, window: int, z_thresh: float) -> np.ndarray:
+    """Replace spikes using a Hampel filter (rolling median + MAD)."""
+    if window <= 1 or angle_deg.size == 0:
+        return angle_deg.astype(np.float64, copy=True)
+    series = pd.Series(angle_deg)
+    med = series.rolling(window=window, center=True, min_periods=1).median()
+    mad = (series - med).abs().rolling(window=window, center=True, min_periods=1).median()
+    mad = mad.replace(0.0, np.nan)
+    z = 0.6745 * (series - med) / mad
+    out = series.to_numpy(dtype=np.float64)
+    z_vals = z.to_numpy(dtype=np.float64)
+    med_vals = med.to_numpy(dtype=np.float64)
+    out[np.abs(z_vals) > z_thresh] = med_vals[np.abs(z_vals) > z_thresh]
+    return out
+
+
+def _mad_outlier(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
+    z_thresh = float(stage.get("z_thresh", stage.get("k", 3.5)))
+    if not np.isfinite(z_thresh) or z_thresh <= 0.0:
+        return values.copy()
+    return mad_outlier_reject(values, z_thresh)
+
+
+def _gaussian_smooth(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
+    sigma = float(stage.get("sigma", stage.get("value_gauss_sigma", 0.0)))
+    window = stage.get("window")
+    return gaussian_smooth_1d_nan(values, sigma, window)
+
+
+def _rate_limit(values: np.ndarray, stage: FilterStage, *, context: FilterContext = None) -> np.ndarray:
+    max_rate = float(stage.get("max_rate_deg_s", stage.get("max_rate", 0.0)))
+    if not np.isfinite(max_rate) or max_rate <= 0.0:
+        return values.copy()
+    if context is None or "t_s" not in context:
+        raise ValueError("rate_limit filter requires context['t_s'].")
+    t_s = np.asarray(context["t_s"], dtype=np.float64)
+    return rate_limit_angles(values, t_s, max_rate)
+
+
 FILTER_FUNCS: dict[str, Any] = {
     # Dictionary mapping filter type names to their corresponding functions
     "moving_average": _moving_average,
@@ -93,8 +212,62 @@ FILTER_FUNCS: dict[str, Any] = {
     "ema": _ema,
     "exponential": _ema,
     "hampel": _hampel,
-    "none": lambda values, stage: values.copy(),
+    "mad_outlier": _mad_outlier,
+    "gaussian_smooth": _gaussian_smooth,
+    "rate_limit": _rate_limit,
+    "none": lambda values, stage, *, context=None: values.copy(),
 }
+
+
+def build_dem_pitch_roll_chain(filter_params: Mapping[str, Any] | None) -> list[FilterStage]:
+    if not filter_params:
+        return []
+    params = dict(filter_params)
+    chain: list[FilterStage] = []
+
+    smooth_window = int(params.get("smooth_window", 0))
+    if smooth_window >= 1:
+        chain.append({
+            "type": "moving_median",
+            "window": smooth_window,
+            "center": True,
+            "min_periods": 1,
+        })
+
+    mad_z_thresh = float(params.get("mad_z_thresh", 0.0))
+    if np.isfinite(mad_z_thresh) and mad_z_thresh > 0.0:
+        chain.append({
+            "type": "mad_outlier",
+            "z_thresh": mad_z_thresh,
+        })
+
+    if bool(params.get("rate_hampel_filter", False)):
+        hampel_window = int(params.get("rate_hampel_window", 0))
+        hampel_z = float(params.get("rate_hampel_z", 0.0))
+        if hampel_window >= 1 and np.isfinite(hampel_z) and hampel_z > 0.0:
+            chain.append({
+                "type": "hampel",
+                "window": hampel_window,
+                "k": hampel_z,
+                "center": True,
+                "min_periods": 1,
+            })
+
+        max_rate = float(params.get("rate_hampel_max_rate", 0.0))
+        if np.isfinite(max_rate) and max_rate > 0.0:
+            chain.append({
+                "type": "rate_limit",
+                "max_rate_deg_s": max_rate,
+            })
+
+    value_gauss_sigma = float(params.get("value_gauss_sigma", 0.0))
+    if np.isfinite(value_gauss_sigma) and value_gauss_sigma > 0.0:
+        chain.append({
+            "type": "gaussian_smooth",
+            "sigma": value_gauss_sigma,
+        })
+
+    return chain
 
 
 def _normalize_chain(spec: Any) -> list[FilterStage]:
@@ -119,7 +292,12 @@ def _normalize_chain(spec: Any) -> list[FilterStage]:
     raise TypeError(f"Unsupported filter specification: {spec!r}")
 
 
-def apply_filter_chain(values: Sequence[float] | np.ndarray, chain: list[FilterStage]) -> np.ndarray:
+def apply_filter_chain(
+    values: Sequence[float] | np.ndarray,
+    chain: list[FilterStage],
+    *,
+    context: FilterContext = None,
+) -> np.ndarray:
     """ Apply a chain of filters to the input values. """
     arr = _to_array(values)
     out = arr
@@ -130,7 +308,7 @@ def apply_filter_chain(values: Sequence[float] | np.ndarray, chain: list[FilterS
         fn = FILTER_FUNCS.get(ftype)
         if fn is None:
             raise KeyError(f"Unknown filter type '{ftype}'. Available: {sorted(FILTER_FUNCS)}")
-        out = fn(out, stage)
+        out = fn(out, stage, context=context)
     return out
 
 
@@ -139,14 +317,16 @@ def apply_named_filter(
     filters_cfg: Mapping[str, Any] | None,
     signal_name: str,
     fallback_key: str | None = "default",
+    *,
+    context: FilterContext = None,
 ) -> FilterResult:
-    """ Apply a named filter chain to the input values."""
+    """ Apply a named filter chain to the input values, optionally using context."""
     if values is None:
         return FilterResult(values=None, chain=[])
     chain = resolve_filter_chain(filters_cfg, signal_name, fallback_key)
     if not chain:
         return FilterResult(values=_to_array(values), chain=[])
-    return FilterResult(values=apply_filter_chain(values, chain), chain=chain)
+    return FilterResult(values=apply_filter_chain(values, chain, context=context), chain=chain)
 
 
 def resolve_filter_chain(
@@ -194,12 +374,13 @@ def filter_signal(
     filters_cfg: Mapping[str, Any] | None = None,
     fallback_key: str | None = "default",
     log_fn: Callable[[str], None] | None = None,
+    context: FilterContext = None,
 ) -> np.ndarray | None:
     """
     Convenience wrapper that applies the configured filter chain for `signal_name`
-    and optionally logs the description.
+    and optionally logs the description. Context can supply extra data (e.g., time).
     """
-    res = apply_named_filter(values, filters_cfg, signal_name, fallback_key=fallback_key)
+    res = apply_named_filter(values, filters_cfg, signal_name, fallback_key=fallback_key, context=context)
     desc = format_chain(res.chain)
     if desc and log_fn is not None:
         log_fn(f"[info] Filtering '{signal_name}': {desc}")

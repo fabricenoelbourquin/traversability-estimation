@@ -36,14 +36,13 @@ from add_dem_features import (
     compute_gradients,
     bilinear_sample,
     compute_yaw_rad,
-    rolling_median,
-    mad_outlier_reject,
     format_dem_scale_label,
 )
 from build_patch_dataset import (
     compute_pitch_deg,
     get_quaternion_block,
 )
+from utils.filtering import build_dem_pitch_roll_chain, filter_signal, gaussian_smooth_1d_nan
 
 
 def compute_roll_deg(df: pd.DataFrame) -> np.ndarray | None:
@@ -61,87 +60,6 @@ def compute_roll_deg(df: pd.DataFrame) -> np.ndarray | None:
 def wrap_angle_rad(a: np.ndarray) -> np.ndarray:
     """Wrap angles to [-pi, pi] for stable difference plots."""
     return (a + np.pi) % (2.0 * np.pi) - np.pi
-
-
-def gaussian_kernel_1d(sigma: float, radius: int) -> np.ndarray:
-    """Build a normalized 1D Gaussian kernel."""
-    if sigma <= 0.0 or radius <= 0:
-        return np.array([1.0], dtype=np.float64)
-    x = np.arange(-radius, radius + 1, dtype=np.float64)
-    kernel = np.exp(-(x * x) / (2.0 * sigma * sigma))
-    ksum = float(np.sum(kernel))
-    if not np.isfinite(ksum) or ksum <= 0.0:
-        return np.array([1.0], dtype=np.float64)
-    return (kernel / ksum).astype(np.float64)
-
-
-def gaussian_smooth_1d_nan(arr: np.ndarray, sigma: float, window: int | None = None) -> np.ndarray:
-    """
-    Gaussian smooth with NaN-aware normalization.
-    This is applied to values (not just plotting) when enabled.
-    """
-    if arr.size == 0 or not np.isfinite(sigma) or sigma <= 0.0:
-        return arr.astype(np.float64, copy=True)
-    if window is None:
-        radius = int(round(3.0 * sigma))
-    else:
-        radius = int(max(1, window // 2))
-    kernel = gaussian_kernel_1d(sigma, radius)
-    pad = radius
-    values = arr.astype(np.float64, copy=True)
-    mask = np.isfinite(values).astype(np.float64)
-    values[~np.isfinite(values)] = 0.0
-
-    values_pad = np.pad(values, pad, mode="reflect")
-    mask_pad = np.pad(mask, pad, mode="reflect")
-
-    num = np.convolve(values_pad, kernel, mode="valid")
-    den = np.convolve(mask_pad, kernel, mode="valid")
-    out = num / np.clip(den, 1e-12, None)
-    out[den == 0.0] = np.nan
-    return out.astype(np.float64)
-
-
-def rate_limit_angles(angle_deg: np.ndarray, t_s: np.ndarray, max_rate_deg_s: float) -> np.ndarray:
-    """
-    Clamp per-sample changes to a maximum rate (deg/s) to suppress DEM spikes.
-    This preserves larger changes if they occur over longer time spans.
-    """
-    out = angle_deg.astype(np.float64, copy=True)
-    if out.size == 0 or not np.isfinite(max_rate_deg_s) or max_rate_deg_s <= 0.0:
-        return out
-    dt = np.diff(t_s, prepend=t_s[0])
-    for i in range(1, len(out)):
-        if not np.isfinite(out[i]) or not np.isfinite(out[i - 1]) or not np.isfinite(dt[i]):
-            continue
-        if dt[i] <= 0.0:
-            continue
-        max_delta = max_rate_deg_s * dt[i]
-        delta = out[i] - out[i - 1]
-        if delta > max_delta:
-            out[i] = out[i - 1] + max_delta
-        elif delta < -max_delta:
-            out[i] = out[i - 1] - max_delta
-    return out
-
-
-def despike_hampel(angle_deg: np.ndarray, window: int, z_thresh: float) -> np.ndarray:
-    """
-    Remove isolated spikes via Hampel filter (rolling median + MAD).
-    This keeps trends but suppresses short, unrealistic swings.
-    """
-    if window <= 1 or angle_deg.size == 0:
-        return angle_deg.astype(np.float64, copy=True)
-    series = pd.Series(angle_deg)
-    med = series.rolling(window=window, center=True, min_periods=1).median()
-    mad = (series - med).abs().rolling(window=window, center=True, min_periods=1).median()
-    mad = mad.replace(0.0, np.nan)
-    z = 0.6745 * (series - med) / mad
-    out = series.to_numpy(dtype=np.float64)
-    z_vals = z.to_numpy(dtype=np.float64)
-    med_vals = med.to_numpy(dtype=np.float64)
-    out[np.abs(z_vals) > z_thresh] = med_vals[np.abs(z_vals) > z_thresh]
-    return out
 
 
 def compute_yaw_from_velocity(df: pd.DataFrame, coord_e: str | None, coord_n: str | None) -> np.ndarray | None:
@@ -196,18 +114,20 @@ def main() -> None:
     dem_cfg = parse_dem_pitch_roll_cfg(metrics_cfg)
     dataset_cfg = load_yaml(Path(args.dataset_config))
     scales_m = dem_cfg["smooth_scales_m"]
-    smooth_window = dem_cfg["smooth_window"]
-    mad_z_thresh = dem_cfg["mad_z_thresh"]
-    if args.rate_hampel_filter is None:
-        args.rate_hampel_filter = dem_cfg["rate_hampel_filter"]
-    if args.rate_hampel_max_rate is None:
-        args.rate_hampel_max_rate = dem_cfg["rate_hampel_max_rate"]
-    if args.rate_hampel_window is None:
-        args.rate_hampel_window = dem_cfg["rate_hampel_window"]
-    if args.rate_hampel_z is None:
-        args.rate_hampel_z = dem_cfg["rate_hampel_z"]
-    if args.value_gauss_sigma is None:
-        args.value_gauss_sigma = dem_cfg["value_gauss_sigma"]
+    filter_params = dict(dem_cfg["filter_params"])
+    if args.rate_hampel_filter is not None:
+        filter_params["rate_hampel_filter"] = args.rate_hampel_filter
+    if args.rate_hampel_max_rate is not None:
+        filter_params["rate_hampel_max_rate"] = args.rate_hampel_max_rate
+    if args.rate_hampel_window is not None:
+        filter_params["rate_hampel_window"] = args.rate_hampel_window
+    if args.rate_hampel_z is not None:
+        filter_params["rate_hampel_z"] = args.rate_hampel_z
+    if args.value_gauss_sigma is not None:
+        filter_params["value_gauss_sigma"] = args.value_gauss_sigma
+    dem_filter_chain = build_dem_pitch_roll_chain(filter_params)
+    dem_filters_cfg = {"dem_pitch_roll": {"chain": dem_filter_chain}}
+    value_gauss_sigma = float(filter_params.get("value_gauss_sigma", 0.0))
 
     synced_path = resolve_synced_parquet(mp.synced, args.hz, prefer_metrics=False)
     df = pd.read_parquet(synced_path).sort_values("t").reset_index(drop=True)
@@ -258,6 +178,7 @@ def main() -> None:
         raise SystemExit("Quaternion columns not found; cannot compute pitch/roll.")
 
     t_rel = df["t"].to_numpy(dtype=float) - float(df["t"].iloc[0])
+    filter_context = {"t_s": t_rel}
     cos_yaw = np.cos(yaw_quat)
     sin_yaw = np.sin(yaw_quat)
     row_f, col_f = world_to_rowcol(transform, east, north)
@@ -277,26 +198,26 @@ def main() -> None:
         pitch_deg = np.rad2deg(np.arctan(s_parallel))
         roll_deg = np.rad2deg(np.arctan(s_perp))
 
-        pitch_deg = rolling_median(pitch_deg, smooth_window)
-        roll_deg = rolling_median(roll_deg, smooth_window)
-        pitch_deg = mad_outlier_reject(pitch_deg, mad_z_thresh)
-        roll_deg = mad_outlier_reject(roll_deg, mad_z_thresh)
-        if args.rate_hampel_filter:
-            pitch_deg = despike_hampel(pitch_deg, args.rate_hampel_window, args.rate_hampel_z)
-            roll_deg = despike_hampel(roll_deg, args.rate_hampel_window, args.rate_hampel_z)
-            pitch_deg = rate_limit_angles(pitch_deg, t_rel, args.rate_hampel_max_rate)
-            roll_deg = rate_limit_angles(roll_deg, t_rel, args.rate_hampel_max_rate)
+        pitch_deg = filter_signal(
+            pitch_deg,
+            "dem_pitch_roll",
+            filters_cfg=dem_filters_cfg,
+            context=filter_context,
+        )
+        roll_deg = filter_signal(
+            roll_deg,
+            "dem_pitch_roll",
+            filters_cfg=dem_filters_cfg,
+            context=filter_context,
+        )
 
         label = format_dem_scale_label(scale_m)
         dem_pitch[label] = pitch_deg
         dem_roll[label] = roll_deg
 
-    if args.value_gauss_sigma and args.value_gauss_sigma > 0.0:
-        pitch_quat = gaussian_smooth_1d_nan(pitch_quat, args.value_gauss_sigma, None)
-        roll_quat = gaussian_smooth_1d_nan(roll_quat, args.value_gauss_sigma, None)
-        for label in dem_pitch:
-            dem_pitch[label] = gaussian_smooth_1d_nan(dem_pitch[label], args.value_gauss_sigma, None)
-            dem_roll[label] = gaussian_smooth_1d_nan(dem_roll[label], args.value_gauss_sigma, None)
+    if value_gauss_sigma and value_gauss_sigma > 0.0:
+        pitch_quat = gaussian_smooth_1d_nan(pitch_quat, value_gauss_sigma, None)
+        roll_quat = gaussian_smooth_1d_nan(roll_quat, value_gauss_sigma, None)
 
     # Stats summary
     def stats(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
