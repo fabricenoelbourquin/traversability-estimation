@@ -33,7 +33,7 @@ from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
 from utils.topics import load_topic_candidates
-from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays
+from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays, get_quaternion_block
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -156,28 +156,6 @@ def render_plot_to_array(fig, canvas, vline, cursor_t: float, target_h: int, tar
 
     return img
 
-def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Prefer qw_WB..qz_WB; else fall back to qw..qz if present.
-    Returns float64 arrays (normalized later by caller).
-    """
-    if all(c in df.columns for c in ("qw_WB", "qx_WB", "qy_WB", "qz_WB")):
-        qw = df["qw_WB"].to_numpy(dtype=np.float64)
-        qx = df["qx_WB"].to_numpy(dtype=np.float64)
-        qy = df["qy_WB"].to_numpy(dtype=np.float64)
-        qz = df["qz_WB"].to_numpy(dtype=np.float64)
-        return qw, qx, qy, qz
-    elif all(c in df.columns for c in ("qw", "qx", "qy", "qz")):
-        print("[warn] Using (qw,qx,qy,qz) instead of qw_WB..qz_WB — make sure this is world, not odom.")
-        qw = df["qw"].to_numpy(dtype=np.float64)
-        qx = df["qx"].to_numpy(dtype=np.float64)
-        qy = df["qy"].to_numpy(dtype=np.float64)
-        qz = df["qz"].to_numpy(dtype=np.float64)
-        return qw, qx, qy, qz
-    else:
-        raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
-
-
 def euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert quaternion q_WB (body→world, active) to yaw-pitch-roll (ZYX) in degrees.
@@ -294,7 +272,7 @@ def main():
     yaw_deg = pitch_deg = roll_deg = None 
     if need_orientation:
         try:
-            qw, qx, qy, qz = get_quaternion_block(df)
+            qw, qx, qy, qz = get_quaternion_block(df, required=True, warn_on_fallback=True)
             qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
             yaw_deg, pitch_deg, roll_deg = euler_zyx_from_qWB(qw, qx, qy, qz)
             have_orientation = True

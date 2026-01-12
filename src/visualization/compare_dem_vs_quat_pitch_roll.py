@@ -19,9 +19,8 @@ Usage:
 """
 
 from __future__ import annotations
-import argparse, math, sys
+import argparse, math
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,61 +28,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import rasterio
-from rasterio.transform import Affine
 from pyproj import Transformer
 
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.geo import find_lat_lon_cols, world_to_rowcol, bilinear_sample
 from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet
 
 
 # ---------- helpers (shared with your other scripts) ----------
-
-def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
-    cand_lat = [c for c in df.columns if "lat" in c.lower()]
-    cand_lon = [c for c in df.columns if "lon" in c.lower()]
-    if not cand_lat or not cand_lon:
-        raise SystemExit(f"Couldn’t find lat/lon columns. Found: lat={cand_lat}, lon={cand_lon}")
-    return cand_lat[0], cand_lon[0]
-
-def world_to_rowcol(transform: Affine, x: np.ndarray, y: np.ndarray):
-    a, _, c, _, e, f = transform.a, transform.b, transform.c, transform.d, transform.e, transform.f
-    col_f = (x - c) / a
-    row_f = (y - f) / e
-    return row_f, col_f
-
-def bilinear_sample(grid: np.ndarray, row_f: np.ndarray, col_f: np.ndarray) -> np.ndarray:
-    H, W = grid.shape
-    i = np.floor(row_f).astype(np.int64)
-    j = np.floor(col_f).astype(np.int64)
-
-    valid = (i >= 0) & (i < H - 1) & (j >= 0) & (j < W - 1)
-    out = np.full(row_f.shape, np.nan, dtype=np.float64)
-    if not np.any(valid):
-        return out
-
-    iv, jv = i[valid], j[valid]
-    di = (row_f[valid] - iv)
-    dj = (col_f[valid] - jv)
-
-    v00 = grid[iv,     jv    ]
-    v10 = grid[iv + 1, jv    ]
-    v01 = grid[iv,     jv + 1]
-    v11 = grid[iv + 1, jv + 1]
-
-    nanmask = np.isnan(v00) | np.isnan(v10) | np.isnan(v01) | np.isnan(v11)
-    w00 = (1 - di) * (1 - dj)
-    w10 = di       * (1 - dj)
-    w01 = (1 - di) * dj
-    w11 = di       * dj
-
-    vals = v00*w00 + v10*w10 + v01*w01 + v11*w11
-    tmp = np.full_like(vals, np.nan)
-    tmp[~nanmask] = vals[~nanmask]
-    out[valid] = tmp
-    return out
 
 def compute_dem_gradients(dem_path: Path):
     with rasterio.open(dem_path) as ds:
@@ -187,8 +142,8 @@ def main():
         transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
         x_e, y_n = transformer.transform(lon, lat)
         row_f, col_f = world_to_rowcol(transform, x_e, y_n)
-        p_s = bilinear_sample(p_grid, row_f, col_f)
-        q_s = bilinear_sample(q_grid, row_f, col_f)
+        p_s = bilinear_sample(p_grid, row_f, col_f, nan_policy="strict")
+        q_s = bilinear_sample(q_grid, row_f, col_f, nan_policy="strict")
 
         g_long = p_s * cosψ + q_s * sinψ
         g_lat  = -p_s * sinψ + q_s * cosψ

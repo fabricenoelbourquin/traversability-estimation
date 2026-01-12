@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Mapping
+from collections.abc import Mapping
 
 from utils.missions import MissionPaths, resolve_mission
 

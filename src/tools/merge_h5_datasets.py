@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple, List
 
 try:
     import h5py  # type: ignore
@@ -36,9 +35,9 @@ def resolve_dataset_path(raw: str, datasets_root: Path, *, must_exist: bool = Fa
     return p
 
 
-def copy_items(src: h5py.File, dst: h5py.File, *, skip_existing: bool) -> Tuple[List[str], List[str]]:
-    added: List[str] = []
-    skipped: List[str] = []
+def copy_items(src: h5py.File, dst: h5py.File, *, skip_existing: bool) -> tuple[list[str], list[str]]:
+    added: list[str] = []
+    skipped: list[str] = []
     for name in src.keys():
         if skip_existing and name in dst:
             skipped.append(name)

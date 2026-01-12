@@ -15,7 +15,7 @@ Examples:
 from __future__ import annotations
 import argparse
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -25,7 +25,7 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.filtering import filter_signal, load_metrics_config
 from utils.synced import resolve_synced_parquet
-from utils.quaternion import euler_zyx_from_wxyz
+from utils.quaternion import euler_zyx_from_wxyz, get_quaternion_block
 from visualization.cluster_shading import (
     ClusterShading,
     add_cluster_background,
@@ -39,31 +39,13 @@ METRIC_LINE_ZORDER = 3.0
 PITCH_LINE_ZORDER = 2.2
 
 
-def _get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return quaternion columns if present, preferring *_WB."""
-    if all(c in df.columns for c in ("qw_WB", "qx_WB", "qy_WB", "qz_WB")):
-        qw = df["qw_WB"].to_numpy(dtype=np.float64)
-        qx = df["qx_WB"].to_numpy(dtype=np.float64)
-        qy = df["qy_WB"].to_numpy(dtype=np.float64)
-        qz = df["qz_WB"].to_numpy(dtype=np.float64)
-        return qw, qx, qy, qz
-    if all(c in df.columns for c in ("qw", "qx", "qy", "qz")):
-        print("[warn] Using (qw,qx,qy,qz) instead of qw_WB..qz_WB — confirm frame is world-aligned.")
-        qw = df["qw"].to_numpy(dtype=np.float64)
-        qx = df["qx"].to_numpy(dtype=np.float64)
-        qy = df["qy"].to_numpy(dtype=np.float64)
-        qz = df["qz"].to_numpy(dtype=np.float64)
-        return qw, qx, qy, qz
-    raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
-
-
 def _euler_zyx_from_qWB(qw: np.ndarray, qx: np.ndarray, qy: np.ndarray, qz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert unit quaternion q_WB to yaw/pitch/roll (ZYX ordering) in degrees."""
     return euler_zyx_from_wxyz(qw, qx, qy, qz, degrees=True)
 
 
 def _compute_pitch_deg(df: pd.DataFrame) -> np.ndarray:
-    qw, qx, qy, qz = _get_quaternion_block(df)
+    qw, qx, qy, qz = get_quaternion_block(df, required=True, warn_on_fallback=True)
     _, pitch_deg, _ = _euler_zyx_from_qWB(qw, qx, qy, qz)
     return -pitch_deg  # align with navigation convention (nose-up positive)
 
@@ -86,7 +68,7 @@ def _add_zero_line(ax) -> None:
     """Draw a faint horizontal line at zero for quick visual reference."""
     ax.axhline(0.0, **ZERO_LINE_STYLE)
 
-def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None, whitelist: Iterable[str]) -> List[str]:
+def _detect_metric_cols(df: pd.DataFrame, include: Sequence[str] | None, whitelist: Iterable[str]) -> list[str]:
     if include:
         missing = [c for c in include if c not in df.columns]
         if missing:

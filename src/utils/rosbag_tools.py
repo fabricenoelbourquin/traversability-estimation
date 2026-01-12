@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Iterable, List
+from collections.abc import Iterable
 from rosbags.highlevel import AnyReader
 from utils.ros_time import message_time_ns
 

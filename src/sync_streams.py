@@ -27,7 +27,6 @@ python src/sync_streams.py \
 from __future__ import annotations
 import argparse, json, math
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -50,7 +49,7 @@ def load_yaml(p: Path) -> dict:
     """
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
-def load_df(path: Path) -> Optional[pd.DataFrame]:
+def load_df(path: Path) -> pd.DataFrame | None:
     """
     Load a parquet file (if present) and normalize the time column:
       - keep only rows with finite 't'

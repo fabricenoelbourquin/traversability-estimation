@@ -10,11 +10,9 @@ Usage:
 from __future__ import annotations
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple
 
 import numpy as np
 import rasterio
-from rasterio.transform import Affine
 from pyproj import Transformer
 import pandas as pd
 import matplotlib  # backend decided after parsing
@@ -23,45 +21,10 @@ from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
+from utils.geo import find_lat_lon_cols, world_to_rowcol, bilinear_sample
 
 
 # ---------- helpers ----------
-def find_lat_lon_cols(df: pd.DataFrame) -> Tuple[str, str]:
-    lat_cols = [c for c in df.columns if "lat" in c.lower()]
-    lon_cols = [c for c in df.columns if "lon" in c.lower()]
-    if not lat_cols or not lon_cols:
-        raise KeyError(f"Couldn't find lat/lon columns. Found lat={lat_cols}, lon={lon_cols}")
-    return lat_cols[0], lon_cols[0]
-
-def world_to_rowcol(transform: Affine, x: np.ndarray, y: np.ndarray):
-    a, _, c, _, e, f = transform.a, transform.b, transform.c, transform.d, transform.e, transform.f
-    col_f = (x - c) / a
-    row_f = (y - f) / e
-    return row_f, col_f
-
-def bilinear_sample(grid: np.ndarray, row_f: np.ndarray, col_f: np.ndarray) -> np.ndarray:
-    H, W = grid.shape
-    i = np.floor(row_f).astype(np.int64)
-    j = np.floor(col_f).astype(np.int64)
-    valid = (i >= 0) & (i < H - 1) & (j >= 0) & (j < W - 1)
-    out = np.full(row_f.shape, np.nan, dtype=np.float64)
-    if not np.any(valid):  # quick exit
-        return out
-    iv, jv = i[valid], j[valid]
-    di = (row_f[valid] - iv)
-    dj = (col_f[valid] - jv)
-    v00 = grid[iv,     jv    ]
-    v10 = grid[iv + 1, jv    ]
-    v01 = grid[iv,     jv + 1]
-    v11 = grid[iv + 1, jv + 1]
-    nanmask = np.isnan(v00) | np.isnan(v10) | np.isnan(v01) | np.isnan(v11)
-    w00 = (1 - di) * (1 - dj); w10 = di * (1 - dj)
-    w01 = (1 - di) * dj;       w11 = di * dj
-    vals = v00*w00 + v10*w10 + v01*w01 + v11*w11
-    tmp = np.full_like(vals, np.nan)
-    tmp[~nanmask] = vals[~nanmask]
-    out[valid] = tmp
-    return out
 
 
 def main():
@@ -157,7 +120,7 @@ def main():
         x_e, y_n = transformer.transform(lon, lat)
 
         row_f, col_f = world_to_rowcol(transform, x_e, y_n)
-        z_traj = bilinear_sample(z, row_f, col_f)
+        z_traj = bilinear_sample(z, row_f, col_f, nan_policy="strict")
 
         valid = np.isfinite(x_e) & np.isfinite(y_n) & np.isfinite(z_traj)
         valid_idx = np.nonzero(valid)[0]

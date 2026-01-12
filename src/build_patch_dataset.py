@@ -29,7 +29,8 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.filtering import load_metrics_config
-from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays, yaw_from_wxyz
+from utils.geo import find_lat_lon_cols, format_dem_scale_label, discover_dem_path, world_to_rowcol
+from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays, yaw_from_wxyz, get_quaternion_block
 
 
 # -------------------------- helpers --------------------------
@@ -38,22 +39,9 @@ def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
 
-def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str, str]:
-    cand_lat = [c for c in df.columns if "lat" in c.lower()]
-    cand_lon = [c for c in df.columns if "lon" in c.lower()]
-    if not cand_lat or not cand_lon:
-        raise KeyError("Could not find lat/lon columns in synced parquet.")
-    return cand_lat[0], cand_lon[0]
-
-
 def format_patch_size_label(size_m: float) -> str:
     # Format patch size label without trailing zeros
     return f"{size_m:.3f}".rstrip("0").rstrip(".")
-
-
-def format_dem_scale_label(scale_m: float) -> str:
-    """Format a meters-based scale for column names (e.g., 0.5 -> 0p5m)."""
-    return f"{scale_m:.1f}".rstrip("0").rstrip(".").replace(".", "p") + "m"
 
 
 def resolve_metric_names(cfg_metrics: dict, repo_root: Path) -> list[str]:
@@ -62,47 +50,6 @@ def resolve_metric_names(cfg_metrics: dict, repo_root: Path) -> list[str]:
         return [str(n) for n in names]
     metrics_cfg = load_yaml(repo_root / "config" / "metrics.yaml")
     return list(metrics_cfg.get("metrics", {}).get("names", []))
-
-
-def discover_dem_path(map_dir: Path, prefer_meta: bool, explicit: str | None = None) -> Path:
-    if explicit:
-        p = Path(explicit)
-        if not p.exists():
-            raise FileNotFoundError(f"DEM override not found: {p}")
-        return p
-
-    swisstopo = map_dir / "swisstopo"
-    search_dirs = [d for d in [swisstopo, map_dir] if d.exists()]
-
-    if prefer_meta:
-        for base in search_dirs:
-            for meta in sorted(base.glob("**/*.json")):
-                try:
-                    data = json.loads(meta.read_text())
-                except Exception:
-                    continue
-                dem = data.get("dem") or {}
-                cand = dem.get("dem_tif")
-                if cand:
-                    p = Path(cand)
-                    if p.exists():
-                        return p
-
-    patterns = ["**/*alti3d*.tif", "**/*dem*.tif"]
-    for base in search_dirs:
-        for pat in patterns:
-            for p in sorted(base.glob(pat)):
-                if p.is_file():
-                    return p
-
-    raise FileNotFoundError(f"DEM not found under {map_dir}/swisstopo (or parent).")
-
-
-def world_to_rowcol(transform: rasterio.Affine, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    a, _, c, _, e, f = transform.a, transform.b, transform.c, transform.d, transform.e, transform.f
-    col_f = (x - c) / a
-    row_f = (y - f) / e
-    return row_f, col_f
 
 
 def fit_plane_to_patch(z_patch: np.ndarray,
@@ -273,18 +220,6 @@ def average_quaternion(df: pd.DataFrame) -> tuple[float, float, float, float]:
                 mean_q = -mean_q
             return tuple(float(x) for x in mean_q)
     return (np.nan, np.nan, np.nan, np.nan)
-
-
-def get_quaternion_block(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
-    for cols in (("qw_WB", "qx_WB", "qy_WB", "qz_WB"), ("qw", "qx", "qy", "qz")):
-        if all(c in df.columns for c in cols):
-            return (
-                df[cols[0]].to_numpy(dtype=np.float64),
-                df[cols[1]].to_numpy(dtype=np.float64),
-                df[cols[2]].to_numpy(dtype=np.float64),
-                df[cols[3]].to_numpy(dtype=np.float64),
-            )
-    return None
 
 
 def compute_pitch_deg(df: pd.DataFrame) -> np.ndarray | None:

@@ -21,7 +21,6 @@ Usage:
 from __future__ import annotations
 import argparse, json
 from pathlib import Path
-from typing import Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -41,11 +40,11 @@ P = get_paths()
 
 # ----------------- helpers -----------------
 
-def pick_synced(sync_dir: Path, hz: Optional[int]) -> Path:
+def pick_synced(sync_dir: Path, hz: int | None) -> Path:
     """Prefer synced_*_metrics.parquet; fallback handled by resolve_synced_parquet."""
     return resolve_synced_parquet(sync_dir, hz, prefer_metrics=True, metrics_only=True)
 
-def latest_swissimg_paths(map_dir: Path) -> Tuple[Path, Path]:
+def latest_swissimg_paths(map_dir: Path) -> tuple[Path, Path]:
     """Return (tif_path, png_path) for the newest swissimg chip."""
     d = map_dir / "swisstopo"
     tifs = sorted(d.glob("*_rgb8.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -74,7 +73,7 @@ def cluster_png_path(short: str, kmeans_k: int, emb: str) -> Path:
         raise FileNotFoundError(f"{p} not found (expected standardized cluster PNG).")
     return p
 
-def latlon_to_pixels(lat: np.ndarray, lon: np.ndarray, tif_path: Path) -> Tuple[np.ndarray, np.ndarray, int, int]:
+def latlon_to_pixels(lat: np.ndarray, lon: np.ndarray, tif_path: Path) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Project WGS84 lat/lon -> target CRS -> pixel (col,row) for the given GeoTIFF.
        Robust to NaNs in lat/lon: returns NaNs for those positions in (cols, rows)."""
     lat = lat.astype(float)
@@ -113,7 +112,7 @@ def aggregate_per_pixel(cols: np.ndarray, rows: np.ndarray, values: np.ndarray, 
     return g
 
 
-def pick_vmin_vmax(vals: np.ndarray, clip_percentile: float, min_zero: bool) -> Tuple[float, float]:
+def pick_vmin_vmax(vals: np.ndarray, clip_percentile: float, min_zero: bool) -> tuple[float, float]:
     vmax = np.nanpercentile(vals, clip_percentile) if clip_percentile else np.nanmax(vals)
     vmax = float(max(vmax, 1e-9))
     vmin = 0.0 if min_zero else float(np.nanmin(vals))

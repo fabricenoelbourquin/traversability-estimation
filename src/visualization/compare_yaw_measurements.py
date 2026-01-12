@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from utils.paths import get_paths
 from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
+from utils.geo import find_lat_lon_cols
 from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet
 
@@ -85,13 +86,6 @@ def rolling_smooth_angle(a: np.ndarray, win_median: int, win_mean: int) -> np.nd
 def circ_rmse(a: np.ndarray, b: np.ndarray) -> float:
     d = np.vectorize(wrap_pi)(a - b)
     return float(np.sqrt(np.nanmean(d*d)))
-
-def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str,str]:
-    cand_lat = [c for c in df.columns if "lat" in c.lower()]
-    cand_lon = [c for c in df.columns if "lon" in c.lower()]
-    if not cand_lat or not cand_lon:
-        raise SystemExit(f"Couldn’t find lat/lon columns. Found: lat={cand_lat}, lon={cand_lon}")
-    return cand_lat[0], cand_lon[0]
 
 # -------------- main --------------
 

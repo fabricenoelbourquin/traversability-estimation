@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 import yaml
 
 
-FilterStage = Mapping[str, Any]
-FilterContext = Mapping[str, Any] | None
+FilterStage = Mapping[str, object]
+FilterContext = Mapping[str, object] | None
 
 
 @dataclass
@@ -205,7 +204,7 @@ def _rate_limit(values: np.ndarray, stage: FilterStage, *, context: FilterContex
     return rate_limit_angles(values, t_s, max_rate)
 
 
-FILTER_FUNCS: dict[str, Any] = {
+FILTER_FUNCS: dict[str, Callable[..., np.ndarray]] = {
     # Dictionary mapping filter type names to their corresponding functions
     "moving_average": _moving_average,
     "moving_median": _moving_median,
@@ -270,7 +269,7 @@ def build_dem_pitch_roll_chain(filter_params: Mapping[str, Any] | None) -> list[
     return chain
 
 
-def _normalize_chain(spec: Any) -> list[FilterStage]:
+def _normalize_chain(spec: object) -> list[FilterStage]:
     """ Normalize a filter specification into a list of filter stages. """
     if spec is None:
         return []
@@ -314,7 +313,7 @@ def apply_filter_chain(
 
 def apply_named_filter(
     values: Sequence[float] | np.ndarray | None,
-    filters_cfg: Mapping[str, Any] | None,
+    filters_cfg: Mapping[str, object] | None,
     signal_name: str,
     fallback_key: str | None = "default",
     *,
@@ -330,7 +329,7 @@ def apply_named_filter(
 
 
 def resolve_filter_chain(
-    filters_cfg: Mapping[str, Any] | None,
+    filters_cfg: Mapping[str, object] | None,
     signal_name: str,
     fallback_key: str | None = "default",
 ) -> list[FilterStage]:
@@ -359,7 +358,7 @@ def format_chain(chain: Sequence[FilterStage]) -> str:
     return " -> ".join(parts)
 
 
-def load_metrics_config(cfg_path: Path) -> dict[str, Any]:
+def load_metrics_config(cfg_path: Path) -> dict[str, object]:
     """ Load the metrics configuration from a YAML file. """
     if not cfg_path.exists():
         return {}
@@ -371,7 +370,7 @@ def filter_signal(
     values: Sequence[float] | np.ndarray | None,
     signal_name: str,
     *,
-    filters_cfg: Mapping[str, Any] | None = None,
+    filters_cfg: Mapping[str, object] | None = None,
     fallback_key: str | None = "default",
     log_fn: Callable[[str], None] | None = None,
     context: FilterContext = None,

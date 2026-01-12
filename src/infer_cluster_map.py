@@ -17,7 +17,6 @@ python src/infer_cluster_map.py --mission ETH-1
 from __future__ import annotations
 import argparse, io, json, os, re
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from PIL import Image
@@ -45,7 +44,7 @@ VALID_IMG_EXT = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
 def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
-def str2bool(x: Optional[str]) -> Optional[bool]:
+def str2bool(x: str | None) -> bool | None:
     if x is None:
         return None
     s = str(x).strip().lower()
@@ -114,7 +113,7 @@ def _read_geotiff_rgb(path_or_mem) -> tuple[np.ndarray, rasterio.DatasetReader]:
         src.close()
         raise
 
-def load_image_from_path(path: str, stride: int) -> tuple[np.ndarray, Optional[rasterio.DatasetReader], tuple[int,int]]:
+def load_image_from_path(path: str, stride: int) -> tuple[np.ndarray, rasterio.DatasetReader | None, tuple[int, int]]:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".tif", ".tiff"):
         rgb, ds = _read_geotiff_rgb(path)
@@ -126,7 +125,7 @@ def load_image_from_path(path: str, stride: int) -> tuple[np.ndarray, Optional[r
     Hs, Ws = (H // stride) * stride, (W // stride) * stride
     return rgb8[:Hs, :Ws], ds, (Hs, Ws)
 
-def write_uint16_label_map(out_base: Path, labels: np.ndarray, ref_ds: Optional[rasterio.DatasetReader]) -> Path:
+def write_uint16_label_map(out_base: Path, labels: np.ndarray, ref_ds: rasterio.DatasetReader | None) -> Path:
     if ref_ds is not None:
         meta = ref_ds.meta.copy()
         meta.update({

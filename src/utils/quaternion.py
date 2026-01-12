@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from scipy.spatial.transform import Rotation as R
 
 
@@ -123,3 +124,24 @@ def euler_zyx_from_wxyz(qw, qx, qy, qz, *, degrees: bool = False):
 def yaw_from_wxyz(qw, qx, qy, qz):
     yaw, _, _ = euler_zyx_from_wxyz(qw, qx, qy, qz, degrees=False)
     return yaw
+
+
+def get_quaternion_block(
+    df: pd.DataFrame,
+    *,
+    required: bool = False,
+    warn_on_fallback: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    for cols in (("qw_WB", "qx_WB", "qy_WB", "qz_WB"), ("qw", "qx", "qy", "qz")):
+        if all(c in df.columns for c in cols):
+            if warn_on_fallback and cols[0] == "qw":
+                print("[warn] Using (qw,qx,qy,qz) instead of qw_WB..qz_WB — confirm frame is world-aligned.")
+            return (
+                df[cols[0]].to_numpy(dtype=np.float64),
+                df[cols[1]].to_numpy(dtype=np.float64),
+                df[cols[2]].to_numpy(dtype=np.float64),
+                df[cols[3]].to_numpy(dtype=np.float64),
+            )
+    if required:
+        raise KeyError("Quaternion columns not found (need qw_WB..qz_WB or qw..qz).")
+    return None

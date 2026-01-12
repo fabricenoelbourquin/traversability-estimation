@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 from functools import lru_cache
-from typing import Mapping
+from collections.abc import Mapping
 
 @dataclass(frozen=True)
 class MissionPaths:

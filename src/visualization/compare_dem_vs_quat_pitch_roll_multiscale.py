@@ -26,8 +26,8 @@ from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_fr
 from utils.synced import resolve_synced_parquet
 from utils.quaternion import euler_zyx_from_wxyz
 
-from add_dem_features import (
-    load_yaml,
+from add_dem_features import load_yaml, compute_yaw_rad
+from utils.geo import (
     parse_dem_pitch_roll_cfg,
     find_lat_lon_cols,
     discover_dem_path,
@@ -35,13 +35,10 @@ from add_dem_features import (
     gaussian_smooth_nan,
     compute_gradients,
     bilinear_sample,
-    compute_yaw_rad,
     format_dem_scale_label,
 )
-from build_patch_dataset import (
-    compute_pitch_deg,
-    get_quaternion_block,
-)
+from build_patch_dataset import compute_pitch_deg
+from utils.quaternion import get_quaternion_block
 from utils.filtering import build_dem_pitch_roll_chain, filter_signal, gaussian_smooth_1d_nan
 
 

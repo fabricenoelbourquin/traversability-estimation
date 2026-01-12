@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -122,7 +121,7 @@ def build_metric_panel(
     x_label: str,
     width_px: int,
     height_px: int,
-    pitch_vals: Optional[np.ndarray],
+    pitch_vals: np.ndarray | None,
     cluster_shading,
 ):
     dpi = 100
@@ -294,10 +293,10 @@ def main():
     pitch_plot = None
     if args.overlay_pitch:
         try:
-            from video_metric_viewer import get_quaternion_block, euler_zyx_from_qWB
-            from utils.quaternion import normalize_quat_arrays
+            from video_metric_viewer import euler_zyx_from_qWB
+            from utils.quaternion import get_quaternion_block, normalize_quat_arrays
 
-            qw, qx, qy, qz = get_quaternion_block(df)
+            qw, qx, qy, qz = get_quaternion_block(df, required=True, warn_on_fallback=True)
             qw, qx, qy, qz = normalize_quat_arrays(qw, qx, qy, qz)
             _, pitch_deg, _ = euler_zyx_from_qWB(qw, qx, qy, qz)
             pitch_plot = pitch_deg[mask_window]

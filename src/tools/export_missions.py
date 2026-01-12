@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse, json, re, subprocess, sys, shutil, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
 
 # ---------- Regexes ----------
 UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
@@ -39,7 +38,7 @@ def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
 
 # ---------- Naming helpers ----------
-def _split_prefix_and_number(token: str) -> Tuple[str, Optional[int]]:
+def _split_prefix_and_number(token: str) -> tuple[str, int | None]:
     """
     Given a token like 'srb1' or 'seilbahn', return (prefix, number|None).
     """
@@ -51,8 +50,8 @@ def _split_prefix_and_number(token: str) -> Tuple[str, Optional[int]]:
     num = m.group(2)
     return prefix[:4], int(num) if num else None
 
-def derive_short_name(raw_short: Optional[str], mission_name: Optional[str],
-                      used_names: Dict[str, str], for_id: str) -> str:
+def derive_short_name(raw_short: str | None, mission_name: str | None,
+                      used_names: dict[str, str], for_id: str) -> str:
     """
     - Prefer provided short name (e.g., from mission info) if its letter prefix is <=5 chars.
     - Else derive from mission_name:
@@ -62,7 +61,7 @@ def derive_short_name(raw_short: Optional[str], mission_name: Optional[str],
     - If no usable number, pick the smallest available integer not already used for this prefix.
     Names are uppercased and de-duplicated across IDs.
     """
-    def claim(prefix: str, preferred_num: Optional[int]) -> str:
+    def claim(prefix: str, preferred_num: int | None) -> str:
         prefix = prefix[:5] if prefix else "MISS"
         if preferred_num is not None:
             cand = f"{prefix}-{preferred_num}"
@@ -101,7 +100,7 @@ def derive_short_name(raw_short: Optional[str], mission_name: Optional[str],
     return claim(prefix, num)
 
 # ---------- Shell helpers ----------
-def run_cmd(cmd: List[str]) -> Optional[str]:
+def run_cmd(cmd: list[str]) -> str | None:
     try:
         env = os.environ.copy()
         # Help avoid truncated table output from klein; harmless if ignored.
@@ -111,13 +110,13 @@ def run_cmd(cmd: List[str]) -> Optional[str]:
     except Exception:
         return None
 
-def fetch_listing(project: Optional[str]) -> Optional[str]:
+def fetch_listing(project: str | None) -> str | None:
     """
     Fetch mission listing as plain text.
     """
     base = ["klein", "list", "missions"]
-    cmds: List[List[str]] = []
-    project_flags: List[List[str]] = []
+    cmds: list[list[str]] = []
+    project_flags: list[list[str]] = []
     if project:
         project_flags = [["--project", project], ["-p", project]]
     else:
@@ -133,15 +132,15 @@ def fetch_listing(project: Optional[str]) -> Optional[str]:
     return None
 
 # ---------- Parsing the listing into generic "handles" ----------
-def handles_from_text(s: str) -> Tuple[List[str], Dict[str, str]]:
+def handles_from_text(s: str) -> tuple[list[str], dict[str, str]]:
     """
     From plain text listing, extract any UUIDs and short tokens like ETH-1.
     If a line contains a UUID, skip short tokens from that line to avoid truncated fragments.
     Also try to capture the mission name column from table-like output for UUID rows.
     """
     s = strip_ansi(s)
-    handles: Set[str] = set()
-    names: Dict[str, str] = {}
+    handles: set[str] = set()
+    names: dict[str, str] = {}
     for line in s.splitlines():
         has_uuid = False
         uuids = list(UUID_RE.findall(line))
@@ -164,7 +163,7 @@ def handles_from_text(s: str) -> Tuple[List[str], Dict[str, str]]:
             handles.add(m)
     return list(handles), names
 
-def listing_to_handles_and_names(s: str) -> Tuple[List[str], Dict[str, str], str]:
+def listing_to_handles_and_names(s: str) -> tuple[list[str], dict[str, str], str]:
     """
     Parse plain text listing. Return handles, mapping UUID -> mission name, and format string.
     """
@@ -179,17 +178,17 @@ def listing_to_handles_and_names(s: str) -> Tuple[List[str], Dict[str, str], str
     return sorted(set(hs)), names, "text"
 
 # ---------- Query details and extract canonical (uuid, short) ----------
-def run_info(handle: str, project: Optional[str]) -> Optional[str]:
+def run_info(handle: str, project: str | None) -> str | None:
     if not shutil.which("klein"):
         sys.exit("klein not found on PATH. Please install kleinkram.")
     base = ["klein", "mission", "info", "-m", handle]
-    variants: List[List[str]] = []
+    variants: list[list[str]] = []
     if project:
         variants.append(base + ["--project", project])
         variants.append(base + ["-p", project])
     else:
         variants.append(base)
-    last_err: Optional[str] = None
+    last_err: str | None = None
     for cmd in variants:
         try:
             p = subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -202,7 +201,7 @@ def run_info(handle: str, project: Optional[str]) -> Optional[str]:
         print(f"[warn] mission info failed for {handle}: {last_err}", file=sys.stderr)
     return None
 
-def extract_uuid_and_short(info_text: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+def extract_uuid_and_short(info_text: str | None) -> tuple[str | None, str | None]:
     if not info_text:
         return None, None
     t = strip_ansi(info_text)
@@ -260,7 +259,7 @@ def main():
     handles = sorted(set(handles))
 
     # Resolve in parallel
-    results: List[Tuple[Optional[str], Optional[str]]] = [None] * len(handles)  # type: ignore
+    results: list[tuple[str | None, str | None] | None] = [None] * len(handles)
     with ThreadPoolExecutor(max_workers=max(1, args.max_workers)) as ex:
         futs = {ex.submit(run_info, h, args.project): i for i, h in enumerate(handles)}
         for fut in as_completed(futs):
@@ -274,7 +273,7 @@ def main():
                 results[i] = (None, None)
 
     # Build items map by UUID (use handle UUID when info fails)
-    by_uuid: Dict[str, Dict[str, str]] = {}
+    by_uuid: dict[str, dict[str, str]] = {}
     for idx, (u, sname) in enumerate(results):
         handle = handles[idx]
         if not u and isinstance(handle, str) and UUID_RE.fullmatch(handle):
@@ -300,8 +299,8 @@ def main():
     items = list(by_uuid.values())
 
     # Merge with existing file unless overwrite is requested (also collect used names)
-    existing: Dict[str, Dict[str, str]] = {}
-    used_names: Dict[str, str] = {}
+    existing: dict[str, dict[str, str]] = {}
+    used_names: dict[str, str] = {}
     out_path = Path(args.out)
     if not args.overwrite and out_path.exists():
         try:
@@ -338,7 +337,7 @@ def main():
     if args.limit:
         items = items[: args.limit]
 
-    merged: Dict[str, Dict[str, str]] = dict(existing)
+    merged: dict[str, dict[str, str]] = dict(existing)
     for item in items:
         merged[item["id"]] = item  # new run overrides existing entry with same id
 

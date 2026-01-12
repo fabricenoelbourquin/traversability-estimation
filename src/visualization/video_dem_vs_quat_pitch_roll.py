@@ -44,7 +44,8 @@ from utils.quaternion import normalize_quat_arrays, rotate_vec_with_quat
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.topics import load_topic_candidates
-from add_dem_features import load_yaml, parse_dem_pitch_roll_cfg, format_dem_scale_label
+from add_dem_features import load_yaml
+from utils.geo import parse_dem_pitch_roll_cfg, format_dem_scale_label
 
 
 # ------------------ helpers ------------------

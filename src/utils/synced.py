@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def infer_hz_from_path(p: Path) -> int | None:
