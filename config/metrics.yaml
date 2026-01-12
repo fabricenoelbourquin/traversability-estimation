@@ -29,21 +29,21 @@ params:
   turn_only_max_v_cmd_for_turn: 0.6 # m/s; commands below this + above min_w considered turn-in-place
   turn_only_pad_s: 3              # seconds padding around turn-in-place commands
 
-# Parameters for the local-plane-fitting DEM slope calculation
-dem_slope_params:
-  # Size of the square patch to fit the plane (e.g., 5 -> 5x5 pixels).
-  # MUST be an odd number.
-  patch_size_pixels: 7
+dem_pitch_roll:
+  # DEM pitch/roll along trajectory, computed once per sample and aggregated per patch.
+  # pitch and roll are calculated from smoothed DEM gradients and bilinear interpolation along trajectory, filtered and averaged to add to dataset.
+  smooth_scales_m: [0.5, 1.5, 3.5]  # Gaussian sigma in meters (converted to pixels via DEM resolution)
+  smooth_window: 5                 # rolling median window for pitch/roll samples
+  mad_z_thresh: 3.5                # global MAD z-score outlier rejection (on entire traj)
+  rate_hampel_filter: true         # enable spike suppression on DEM pitch/roll values
+  rate_hampel_max_rate: 5.0        # max pitch/roll rate [deg/s] for spike suppression
+  rate_hampel_window: 101          # Hampel filter window (samples)
+  rate_hampel_z: 2.0               # Hampel MAD z-threshold
+  value_gauss_sigma: 10.0          # Gaussian smoothing sigma (samples) for values
 
-  # Method for weighting pixels in the least-squares fit.
-  # "uniform": All pixels in the patch are weighted equally.
-  # "gaussian": Pixels closer to the center are weighted more.
-  weighting_method: "gaussian"
-
-  # Standard deviation (in pixels) for the Gaussian weight kernel.
-  # Only used if weighting_method is "gaussian".
-  # A good starting value is (patch_size_pixels / 4).
-  weighting_sigma_pixels: 2.25
+robot:
+  mass_kg: 50.0      
+  gravity: 9.81
 
 filters:
   # leave default as pass-through so only explicitly listed signals are smoothed
@@ -120,6 +120,3 @@ filters:
     - type: moving_average
       window: 35
 
-robot:
-  mass_kg: 50.0      
-  gravity: 9.81

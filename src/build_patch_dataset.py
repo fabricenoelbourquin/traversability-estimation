@@ -4,7 +4,8 @@ Build a patch-level HDF5 dataset for one mission.
 
 Features per patch:
   - Heightmap (DEM): single plane-fit slope in E/N/magnitude, gradient orientation, and quadratic-fit curvatures (k1/k2, mean, abs, directional along/ across heading).
-  - Robot: mean/percentile for selected metrics, actual speed, commanded speed, pitch [deg];
+  - DEM (multi-scale): pitch/roll estimates along/ across heading from DEM gradients at multiple smoothing scales.
+  - Robot: mean/p5/p95 for selected metrics, actual speed, commanded speed, pitch [deg];
            distance traveled, time span, mean bearing quaternion.
 
 Patches are centered on the trajectory (distance-based stride) and use a square footprint.
@@ -17,7 +18,6 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -37,21 +37,6 @@ def load_yaml(p: Path) -> dict:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
 
-def load_dem_params(metrics_path: Path) -> dict:
-    """Load DEM slope params (plane-fitting) from metrics.yaml."""
-    cfg = load_yaml(metrics_path)
-    params = (cfg.get("dem_slope_params") or {})
-    if not params:
-        raise SystemExit(f"'dem_slope_params' missing in {metrics_path}")
-    size = int(params.get("patch_size_pixels", 9))
-    if size % 2 == 0:
-        raise SystemExit(f"patch_size_pixels ({size}) must be odd.")
-    params["patch_size_pixels"] = size
-    params["weighting_method"] = params.get("weighting_method", "gaussian")
-    params["weighting_sigma_pixels"] = float(params.get("weighting_sigma_pixels", size / 4.0))
-    return params
-
-
 def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str, str]:
     cand_lat = [c for c in df.columns if "lat" in c.lower()]
     cand_lon = [c for c in df.columns if "lon" in c.lower()]
@@ -63,6 +48,11 @@ def find_lat_lon_cols(df: pd.DataFrame) -> tuple[str, str]:
 def format_patch_size_label(size_m: float) -> str:
     # Format patch size label without trailing zeros
     return f"{size_m:.3f}".rstrip("0").rstrip(".")
+
+
+def format_dem_scale_label(scale_m: float) -> str:
+    """Format a meters-based scale for column names (e.g., 0.5 -> 0p5m)."""
+    return f"{scale_m:.1f}".rstrip("0").rstrip(".").replace(".", "p") + "m"
 
 
 def resolve_metric_names(cfg_metrics: dict, repo_root: Path) -> list[str]:
@@ -112,100 +102,6 @@ def world_to_rowcol(transform: rasterio.Affine, x: np.ndarray, y: np.ndarray) ->
     col_f = (x - c) / a
     row_f = (y - f) / e
     return row_f, col_f
-
-
-def create_weight_kernel(method: str, size: int, sigma: float) -> np.ndarray:
-    if method == "uniform":
-        return np.ones((size, size), dtype=np.float64)
-    if method == "gaussian":
-        if sigma <= 0.0 or not np.isfinite(sigma):
-            raise ValueError(f"weighting_sigma_pixels must be > 0 (got {sigma})")
-        ax = np.arange(-size // 2 + 1., size // 2 + 1.)
-        xx, yy = np.meshgrid(ax, ax)
-        kernel = np.exp(-(xx ** 2 + yy ** 2) / (2.0 * sigma ** 2))
-        denom = np.nanmax(kernel)
-        if not np.isfinite(denom) or denom <= 0.0:
-            raise ValueError("Gaussian kernel normalization failed (denom <= 0).")
-        kernel = kernel / denom
-        return kernel.astype(np.float64)
-    raise ValueError(f"Unknown weighting_method: {method}")
-
-
-def sample_gradients_planefit(z_grid: np.ndarray,
-                              transform: rasterio.Affine,
-                              row_f: np.ndarray,
-                              col_f: np.ndarray,
-                              config: dict) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Calculate DEM gradients (p=∂z/∂E, q=∂z/∂N) at arbitrary fractional row/col
-    positions by fitting a plane to a local patch.
-    Mirrors the logic in add_dem_longlat_slope.py
-    Arguments:
-        z_grid: (H,W) DEM grid
-        transform: rasterio Affine transform for the DEM, maps pixel coords ↔ world coords.
-        row_f: (N,) fractional row positions
-        col_f: (N,) fractional column positions
-        config: dict with plane-fitting parameters
-    Returns:
-        p_s: (N,) eastward slopes
-        q_s: (N,) northward slopes
-    """
-    H, W_img = z_grid.shape
-    N = len(row_f)
-    p_s = np.full(N, np.nan, dtype=np.float64)
-    q_s = np.full(N, np.nan, dtype=np.float64)
-
-    size = int(config["patch_size_pixels"])
-    half_size = size // 2
-
-    kernel = create_weight_kernel(
-        config["weighting_method"],
-        size,
-        float(config.get("weighting_sigma_pixels", 1.25))
-    )
-    weights = kernel.ravel().astype(np.float64)
-    if not np.isfinite(weights).all():
-        raise ValueError("Weight kernel contains non-finite values.")
-
-    # transform.a ~ pixel width in meters (east), transform.e ~ pixel height in meters (north, negative)
-    a_res, e_res = transform.a, transform.e
-    patch_rows_rel = np.arange(-half_size, half_size + 1)
-    patch_cols_rel = np.arange(-half_size, half_size + 1)
-    xx_rel_pix, yy_rel_pix = np.meshgrid(patch_cols_rel, patch_rows_rel)
-    dx_meters = xx_rel_pix.ravel() * a_res
-    dy_meters = yy_rel_pix.ravel() * e_res
-    # Design matrix for plane fitting: z = p*dx + q*dy + c
-    A = np.stack([dx_meters, dy_meters, np.ones(size * size, dtype=np.float64)], axis=1)
-    if not np.isfinite(A).all():
-        raise ValueError("Design matrix A has non-finite entries.")
-    A_w = weights[:, None] * A
-    A_w_pinv = np.linalg.pinv(A_w)
-
-    row_i = np.round(row_f).astype(np.int64).ravel()
-    col_i = np.round(col_f).astype(np.int64).ravel()
-
-    for i in range(N):
-        r_center = int(row_i[i])
-        c_center = int(col_i[i])
-
-        if (r_center < half_size or r_center >= H - half_size or
-                c_center < half_size or c_center >= W_img - half_size):
-            continue
-
-        z_patch = z_grid[
-            r_center - half_size: r_center + half_size + 1,
-            c_center - half_size: c_center + half_size + 1
-        ]
-        b = z_patch.ravel()
-        if np.isnan(b).any():
-            continue
-
-        b_w = weights * b
-        C = A_w_pinv @ b_w
-        p_s[i] = C[0]
-        q_s[i] = C[1]
-
-    return p_s, q_s
 
 
 def fit_plane_to_patch(z_patch: np.ndarray,
@@ -284,17 +180,6 @@ def fit_quadratic_patch(z_patch: np.ndarray,
     return tuple(float(x) for x in coeffs)  # type: ignore[return-value]
 
 
-def compute_gradients(z: np.ndarray, transform: rasterio.Affine) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    res_x = abs(transform.a)
-    res_y = abs(transform.e)
-    dz_drow, dz_dcol = np.gradient(z, res_y, res_x)  # row -> south, col -> east
-    grad_e = dz_dcol
-    grad_n = -dz_drow  # flip sign so positive is northward
-    grad_mag = np.hypot(grad_e, grad_n)
-    grad_theta = np.arctan2(grad_n, grad_e)
-    return grad_e, grad_n, grad_mag, grad_theta
-
-
 def select_patch_centers(distances: np.ndarray, valid_idx: np.ndarray, stride_m: float) -> list[int]:
     if distances.size == 0 or stride_m <= 0:
         return []
@@ -311,12 +196,13 @@ def select_patch_centers(distances: np.ndarray, valid_idx: np.ndarray, stride_m:
 
 
 def nan_stats(arr: np.ndarray) -> tuple[float, float, float]:
+    """Return mean/p5/p95 for finite values; NaN if empty."""
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
         return (np.nan, np.nan, np.nan)
-    lower = float(np.nanpercentile(finite, 5.0))
-    upper = float(np.nanpercentile(finite, 95.0))
-    return (float(np.nanmean(finite)), lower, upper)
+    p5 = float(np.nanpercentile(finite, 5.0))
+    p95 = float(np.nanpercentile(finite, 95.0))
+    return (float(np.nanmean(finite)), p5, p95)
 
 
 def circular_mean(angles: np.ndarray) -> float:
@@ -447,6 +333,35 @@ def yaw_from_quaternion(qw: float, qx: float, qy: float, qz: float) -> float:
     r00 = 1.0 - 2.0 * (yy + zz)
     r10 = 2.0 * (xy + wz)
     return float(math.atan2(r10, r00))
+
+
+def aggregate_dem_pitch_roll_from_samples(df_patch: pd.DataFrame, scales_m: list[float]) -> dict[str, float]:
+    """
+    Aggregate precomputed per-sample DEM pitch/roll values inside a patch.
+    Expects columns dem_pitch_<scale>_deg and dem_roll_<scale>_deg.
+    """
+    out: dict[str, float] = {}
+    for scale_m in scales_m:
+        label = format_dem_scale_label(scale_m)
+        pitch_col = f"dem_pitch_{label}_deg"
+        roll_col = f"dem_roll_{label}_deg"
+        if pitch_col in df_patch.columns:
+            out[f"pitch_dem_{label}_mean"], out[f"pitch_dem_{label}_p5"], out[f"pitch_dem_{label}_p95"] = nan_stats(
+                df_patch[pitch_col].to_numpy(dtype=float)
+            )
+        else:
+            out[f"pitch_dem_{label}_mean"] = np.nan
+            out[f"pitch_dem_{label}_p5"] = np.nan
+            out[f"pitch_dem_{label}_p95"] = np.nan
+        if roll_col in df_patch.columns:
+            out[f"roll_dem_{label}_mean"], out[f"roll_dem_{label}_p5"], out[f"roll_dem_{label}_p95"] = nan_stats(
+                df_patch[roll_col].to_numpy(dtype=float)
+            )
+        else:
+            out[f"roll_dem_{label}_mean"] = np.nan
+            out[f"roll_dem_{label}_p5"] = np.nan
+            out[f"roll_dem_{label}_p95"] = np.nan
+    return out
 
 
 def summarize_metric(df: pd.DataFrame, col: str) -> tuple[float, float, float]:
@@ -599,17 +514,17 @@ def compute_patch_cot(df_patch: pd.DataFrame,
 
 
 def aggregate_robot_patch(df_patch: pd.DataFrame,
-                          metric_names: Iterable[str],
+                          metric_names: list[str],
                           include_speed: bool,
                           include_cmd_speed: bool,
                           cot_cfg: dict[str, float] | None) -> dict:
     out: dict[str, float] = {}
 
     for m in metric_names:
-        mu, mn, mx = summarize_metric(df_patch, m)
+        mu, p5, p95 = summarize_metric(df_patch, m)
         out[f"metric_{m}_mean"] = mu
-        out[f"metric_{m}_min"] = mn
-        out[f"metric_{m}_max"] = mx
+        out[f"metric_{m}_p5"] = p5
+        out[f"metric_{m}_p95"] = p95
 
     if include_speed:
         if "v_actual" in df_patch:
@@ -621,9 +536,9 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
         else:
             speed = np.array([], dtype=float)
         if speed.size:
-            out["speed_mean"], out["speed_min"], out["speed_max"] = nan_stats(speed)
+            out["speed_mean"], out["speed_p5"], out["speed_p95"] = nan_stats(speed)
         else:
-            out["speed_mean"] = out["speed_min"] = out["speed_max"] = np.nan
+            out["speed_mean"] = out["speed_p5"] = out["speed_p95"] = np.nan
 
     if include_cmd_speed:
         if "v_cmd" in df_patch:
@@ -633,9 +548,9 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
         else:
             vcmd = np.array([], dtype=float)
         if vcmd.size:
-            out["v_cmd_mean"], out["v_cmd_min"], out["v_cmd_max"] = nan_stats(vcmd)
+            out["v_cmd_mean"], out["v_cmd_p5"], out["v_cmd_p95"] = nan_stats(vcmd)
         else:
-            out["v_cmd_mean"] = out["v_cmd_min"] = out["v_cmd_max"] = np.nan
+            out["v_cmd_mean"] = out["v_cmd_p5"] = out["v_cmd_p95"] = np.nan
         if cot_cfg:
             cot_val, cot_trim = compute_patch_cot(
                 df_patch,
@@ -684,9 +599,9 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
     # Pitch statistics (deg), using percentiles to reduce outlier influence
     pitch = compute_pitch_deg(df_patch)
     if pitch is not None and pitch.size:
-        out["pitch_deg_mean"], out["pitch_deg_min"], out["pitch_deg_max"] = nan_stats(pitch)
+        out["pitch_deg_mean"], out["pitch_deg_p5"], out["pitch_deg_p95"] = nan_stats(pitch)
     else:
-        out["pitch_deg_mean"] = out["pitch_deg_min"] = out["pitch_deg_max"] = np.nan
+        out["pitch_deg_mean"] = out["pitch_deg_p5"] = out["pitch_deg_p95"] = np.nan
 
     return out
 
@@ -781,6 +696,40 @@ def main():
     P = get_paths()
 
     metrics_cfg_full = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
+    dem_pitch_roll_cfg = metrics_cfg_full.get("dem_pitch_roll")
+    if not isinstance(dem_pitch_roll_cfg, dict):
+        raise SystemExit("Missing or invalid 'dem_pitch_roll' in config/metrics.yaml.")
+    # Get DEM pitch/roll config and check for validity
+    dem_smooth_scales_m_raw = dem_pitch_roll_cfg.get("smooth_scales_m")
+    if not isinstance(dem_smooth_scales_m_raw, (list, tuple)):
+        raise SystemExit("'dem_pitch_roll.smooth_scales_m' must be a list of meters-based scales.")
+    dem_smooth_scales_m = []
+    for val in dem_smooth_scales_m_raw:
+        try:
+            scale_m = float(val)
+        except Exception:
+            continue
+        if np.isfinite(scale_m) and scale_m > 0.0:
+            dem_smooth_scales_m.append(scale_m)
+    if not dem_smooth_scales_m:
+        raise SystemExit("'dem_pitch_roll.smooth_scales_m' must contain positive finite values.")
+
+    if "smooth_window" not in dem_pitch_roll_cfg:
+        raise SystemExit("Missing 'dem_pitch_roll.smooth_window' in metrics config.")
+    dem_smooth_window = int(dem_pitch_roll_cfg.get("smooth_window"))
+    if dem_smooth_window < 1:
+        raise SystemExit("'dem_pitch_roll.smooth_window' must be >= 1.")
+
+    if "mad_z_thresh" not in dem_pitch_roll_cfg:
+        raise SystemExit("Missing 'dem_pitch_roll.mad_z_thresh' in metrics config.")
+    dem_mad_z_thresh = float(dem_pitch_roll_cfg.get("mad_z_thresh"))
+    if not np.isfinite(dem_mad_z_thresh) or dem_mad_z_thresh <= 0.0:
+        raise SystemExit("'dem_pitch_roll.mad_z_thresh' must be > 0.")
+    dem_rate_hampel_filter = bool(dem_pitch_roll_cfg.get("rate_hampel_filter", False))
+    dem_rate_hampel_max_rate = float(dem_pitch_roll_cfg.get("rate_hampel_max_rate", np.nan))
+    dem_rate_hampel_window = int(dem_pitch_roll_cfg.get("rate_hampel_window", 0))
+    dem_rate_hampel_z = float(dem_pitch_roll_cfg.get("rate_hampel_z", np.nan))
+    dem_value_gauss_sigma = float(dem_pitch_roll_cfg.get("value_gauss_sigma", np.nan))
     robot_cfg_full = (metrics_cfg_full.get("robot") or {})
     params_cfg_full = (metrics_cfg_full.get("params") or {})
     cot_cfg = {
@@ -818,6 +767,7 @@ def main():
     transform = None
     z = None
     res_m = float("nan")
+    dem_smooth_scales_px: list[float] = []
     try:
         dem_path = discover_dem_path(
             mp.maps,
@@ -886,6 +836,19 @@ def main():
         segments = [df]
 
     dem_available = z is not None and transform is not None
+    dem_labels = [format_dem_scale_label(s) for s in dem_smooth_scales_m]
+    use_precomputed_dem = all(
+        (f"dem_pitch_{lab}_deg" in df.columns and f"dem_roll_{lab}_deg" in df.columns)
+        for lab in dem_labels
+    )
+    if dem_available and np.isfinite(res_m) and res_m > 0.0:
+        dem_smooth_scales_px = [
+            float(scale_m / res_m)
+            for scale_m in dem_smooth_scales_m
+            if np.isfinite(scale_m) and scale_m > 0.0
+        ]
+    if not use_precomputed_dem:
+        raise SystemExit("Missing precomputed DEM pitch/roll columns; run add_dem_features.py first.")
     half_px = max(1, int(round((patch_size_m / 2.0) / res_m))) if dem_available else None
     H, W = z.shape if dem_available else (0, 0)
 
@@ -1004,6 +967,8 @@ def main():
                 robot_feats.get("bearing_qz", np.nan),
             )
 
+            dem_pitch_roll_feats = aggregate_dem_pitch_roll_from_samples(df_patch, dem_smooth_scales_m)
+
             if quad_coeffs is not None:
                 a2, b2, c2, d2, e2, _ = quad_coeffs
                 grad_sq = d2 * d2 + e2 * e2
@@ -1066,6 +1031,7 @@ def main():
                 "samples": int(len(df_patch)),
             }
             row.update(robot_feats)
+            row.update(dem_pitch_roll_feats)
             rows.append(row)
             patch_idx += 1
 
@@ -1172,6 +1138,15 @@ def main():
         "hz": float(hz_used) if hz_used is not None else float("nan"),
         "dem_path": str(dem_path) if dem_path else "",
         "include_dino_embeddings": include_dino,
+        "dem_pitch_roll_scales_m": json.dumps(dem_smooth_scales_m),
+        "dem_pitch_roll_scales_px": json.dumps(dem_smooth_scales_px) if dem_smooth_scales_px else "",
+        "dem_pitch_roll_smooth_window": dem_smooth_window,
+        "dem_pitch_roll_mad_z_thresh": dem_mad_z_thresh,
+        "dem_pitch_roll_rate_hampel_filter": bool(dem_rate_hampel_filter),
+        "dem_pitch_roll_rate_hampel_max_rate": dem_rate_hampel_max_rate,
+        "dem_pitch_roll_rate_hampel_window": dem_rate_hampel_window,
+        "dem_pitch_roll_rate_hampel_z": dem_rate_hampel_z,
+        "dem_pitch_roll_value_gauss_sigma": dem_value_gauss_sigma,
         "time_ranges_s": json.dumps(time_ranges) if time_ranges else "",
         "config_path": str(Path(args.config).resolve()),
     }

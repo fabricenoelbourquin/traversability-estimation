@@ -17,8 +17,8 @@ Usage:
       --fps 15
 
 Notes:
-- If dem_slope_* columns aren't in synced_<Hz>Hz_metrics.parquet,
-  slopes are computed from the DEM on-the-fly.
+- Uses precomputed DEM pitch/roll columns from add_dem_features.py.
+- Selects the middle smoothing scale by default (lower-middle if even count).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+
 
 import cv2
 import numpy as np
@@ -34,19 +34,16 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import rasterio
-from rasterio.transform import Affine
-from pyproj import Transformer
 
 from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 
 from utils.paths import get_paths
-from utils.missions import resolve_mission
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.rosbag_tools import expand_bag_patterns, filter_valid_rosbags
 from utils.topics import load_topic_candidates
+from add_dem_features import load_yaml, parse_dem_pitch_roll_cfg, format_dem_scale_label
 
 
 # ------------------ helpers ------------------
@@ -131,54 +128,6 @@ def render_plot_to_array(fig, canvas, vline, cursor_t: float, target_h: int, tar
         img = cv2.resize(img, (target_w, target_h))
     return img
 
-def world_to_rowcol(transform: Affine, x: np.ndarray, y: np.ndarray):
-    a, _, c, _, e, f = transform.a, transform.b, transform.c, transform.d, transform.e, transform.f
-    col_f = (x - c) / a
-    row_f = (y - f) / e
-    return row_f, col_f
-
-def bilinear_sample(grid: np.ndarray, row_f: np.ndarray, col_f: np.ndarray) -> np.ndarray:
-    H, W = grid.shape
-    i = np.floor(row_f).astype(np.int64)
-    j = np.floor(col_f).astype(np.int64)
-    valid = (i >= 0) & (i < H - 1) & (j >= 0) & (j < W - 1)
-    out = np.full(row_f.shape, np.nan, dtype=np.float64)
-    if not np.any(valid):
-        return out
-    iv, jv = i[valid], j[valid]
-    di = (row_f[valid] - iv)
-    dj = (col_f[valid] - jv)
-    v00 = grid[iv,     jv    ]
-    v10 = grid[iv + 1, jv    ]
-    v01 = grid[iv,     jv + 1]
-    v11 = grid[iv + 1, jv + 1]
-    nanmask = np.isnan(v00) | np.isnan(v10) | np.isnan(v01) | np.isnan(v11)
-    w00 = (1 - di) * (1 - dj)
-    w10 = di       * (1 - dj)
-    w01 = (1 - di) * dj
-    w11 = di       * dj
-    vals = v00*w00 + v10*w10 + v01*w01 + v11*w11
-    tmp = np.full_like(vals, np.nan)
-    tmp[~nanmask] = vals[~nanmask]
-    out[valid] = tmp
-    return out
-
-def compute_dem_gradients(dem_path: Path):
-    with rasterio.open(dem_path) as ds:
-        z = ds.read(1).astype(np.float64)
-        nodata = ds.nodata
-        transform = ds.transform
-        crs = ds.crs
-    if nodata is not None:
-        z = np.where(z == nodata, np.nan, z)
-    dz_drow, dz_dcol = np.gradient(z, edge_order=2)
-    a = transform.a   # pixel size East
-    e = transform.e   # pixel size North (negative for north-up)
-    p = dz_dcol / a   # ∂z/∂E
-    q = dz_drow / e   # ∂z/∂N
-    return p, q, transform, crs
-
-
 # ------------------ main ------------------
 
 def main():
@@ -191,6 +140,7 @@ def main():
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--dem", type=str, default=None, help="Override DEM path; default: <mission>/maps/swisstopo/alti3d_chip512_gsd050.tif")
     ap.add_argument("--smooth", type=int, default=1, help="Optional rolling mean (samples) for display.")
+    ap.add_argument("--metrics-config", default="config/metrics.yaml", help="Metrics config YAML (dem_pitch_roll).")
     ap.add_argument("--max-frames", type=int, default=None)
     args = ap.parse_args()
 
@@ -213,7 +163,7 @@ def main():
     else:
         camera_topics = default_camera_topics
 
-    synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=True)
+    synced_path = resolve_synced_parquet(sync_dir, args.hz, prefer_metrics=False)
     hz = args.hz if args.hz is not None else (infer_hz_from_path(synced_path) or 10)
     df = pd.read_parquet(synced_path).sort_values("t").reset_index(drop=True)
     time_col = guess_time_col(df)
@@ -249,42 +199,35 @@ def main():
     pitch_quat = np.degrees(np.arcsin(np.clip(f_w[:, 2], -1.0, 1.0)))  # nose up +
     roll_quat  = np.degrees(np.arcsin(np.clip(l_w[:, 2], -1.0, 1.0)))  # left up  +
 
-    # DEM-derived slopes: read from metrics if present, else compute
+    # DEM-derived slopes: read precomputed pitch/roll at the middle smoothing scale
     dem_long = dem_lat = None
-    metrics_path = sync_dir / f"synced_{hz}Hz_metrics.parquet"
-    if metrics_path.exists() and {"dem_slope_long_deg", "dem_slope_lat_deg"}.issubset(pd.read_parquet(metrics_path).columns):
-        m = pd.read_parquet(metrics_path)[["t", "dem_slope_long_deg", "dem_slope_lat_deg"]]
-        df = df.merge(m, on="t", how="left")
-        dem_long = df["dem_slope_long_deg"].to_numpy()
-        dem_lat  = df["dem_slope_lat_deg"].to_numpy()
+    metrics_cfg = load_yaml(Path(args.metrics_config))
+    dem_cfg = parse_dem_pitch_roll_cfg(metrics_cfg)
+    scales_m = dem_cfg["smooth_scales_m"]
+    if not scales_m:
+        raise SystemExit("No dem_pitch_roll.smooth_scales_m configured.")
+    scale_idx = (len(scales_m) - 1) // 2
+    scale_label = format_dem_scale_label(scales_m[scale_idx])
+    pitch_col = f"dem_pitch_{scale_label}_deg"
+    roll_col = f"dem_roll_{scale_label}_deg"
+
+    if pitch_col in df.columns and roll_col in df.columns:
+        dem_long = df[pitch_col].to_numpy()
+        dem_lat = df[roll_col].to_numpy()
     else:
-        # compute from DEM on-the-fly
-        dem_path = Path(args.dem) if args.dem else (map_dir / "swisstopo" / "alti3d_chip512_gsd050.tif")
-        if not dem_path.exists():
-            raise FileNotFoundError(f"DEM not found: {dem_path}")
+        metrics_path = sync_dir / f"synced_{hz}Hz_metrics.parquet"
+        if metrics_path.exists():
+            m = pd.read_parquet(metrics_path)
+            if {pitch_col, roll_col}.issubset(m.columns):
+                df = df.merge(m[["t", pitch_col, roll_col]], on="t", how="left")
+                dem_long = df[pitch_col].to_numpy()
+                dem_lat = df[roll_col].to_numpy()
 
-        # Need lat/lon
-        lat_col = next(c for c in df.columns if "lat" in c.lower())
-        lon_col = next(c for c in df.columns if "lon" in c.lower())
-        lat = df[lat_col].to_numpy()
-        lon = df[lon_col].to_numpy()
-
-        p_grid, q_grid, transform, dem_crs = compute_dem_gradients(dem_path)
-
-        # Heading yaw from quaternion: ψ = atan2(N,E) of forward vector
-        psi = np.arctan2(f_w[:, 1], f_w[:, 0])
-        cosψ, sinψ = np.cos(psi), np.sin(psi)
-
-        transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
-        x_e, y_n = transformer.transform(lon, lat)
-        row_f, col_f = world_to_rowcol(transform, x_e, y_n)
-        p_s = bilinear_sample(p_grid, row_f, col_f)
-        q_s = bilinear_sample(q_grid, row_f, col_f)
-
-        g_long = p_s * cosψ + q_s * sinψ
-        g_lat  = -p_s * sinψ + q_s * cosψ
-        dem_long = np.degrees(np.arctan(g_long))
-        dem_lat  = np.degrees(np.arctan(g_lat))
+    if dem_long is None or dem_lat is None:
+        raise SystemExit(
+            f"Missing DEM pitch/roll columns ({pitch_col}, {roll_col}). "
+            "Run add_dem_features.py first."
+        )
 
     # Optional smoothing for display
     if args.smooth and args.smooth > 1:

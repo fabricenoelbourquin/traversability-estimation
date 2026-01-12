@@ -37,7 +37,6 @@ visuals:
 
   compare_dem_vs_quat_pitch_roll:
     enabled: true
-    smooth_win: 1           # >1 applies smoothing; pipeline passes --smooth-win N
 
   videos:
     metric_viewer:

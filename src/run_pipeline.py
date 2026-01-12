@@ -336,11 +336,11 @@ def main():
     else:
         print(">> Skipping cluster inference.")
 
-    # 7) Add DEM/longlat/slope
+    # 7) Add DEM features
     if not skip_dem_slope:
-        sh([py, "src/add_dem_longlat_slope.py", *ident_either()])
+        sh([py, "src/add_dem_features.py", *ident_either()])
     else:
-        print(">> Skipping DEM/longlat/slope.")    
+        print(">> Skipping DEM features.")
 
     # 8) Dataset export (patch-level HDF5)
     if not skip_dataset:
@@ -408,13 +408,10 @@ def main():
         else:
             print(">> DEM 3D plot disabled in config.")
 
-        # --- Compare DEM vs quat pitch/roll
+        # --- Compare DEM vs quat pitch/roll (multiscale)
         cmp_cfg = (vis.get("compare_dem_vs_quat_pitch_roll") or {})
         if gps_available and not skip_dem_slope and yes(cmp_cfg.get("enabled", True)):
-            cmd = [py, "src/visualization/compare_dem_vs_quat_pitch_roll.py", *ident_either()]
-            smooth_win = int(cmp_cfg.get("smooth_win", 1) or 1)
-            if smooth_win != 1:
-                cmd += ["--smooth-win", str(smooth_win)]
+            cmd = [py, "src/visualization/compare_dem_vs_quat_pitch_roll_multiscale.py", *ident_either()]
             sh(cmd)
         elif not gps_available and yes(cmp_cfg.get("enabled", True)):
             print(">> DEM vs quat pitch/roll comparison requires GPS/DEM; skipping.")
