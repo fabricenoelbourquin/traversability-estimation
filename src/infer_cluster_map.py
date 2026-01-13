@@ -28,6 +28,8 @@ import torch.nn.functional as F
 
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.transform import array_bounds
+from affine import Affine
 
 import yaml
 from transformers import AutoImageProcessor, AutoModel
@@ -156,6 +158,45 @@ def save_color_png(out_base: Path, labels: np.ndarray, palette: np.ndarray) -> P
     p = out_base.with_name(out_base.name + "_rgb").with_suffix(".png")
     Image.fromarray(rgb).save(p)
     return p
+
+def save_dino_embeddings(
+    out_dir: Path,
+    base_stem: str,
+    feat: np.ndarray,
+    ref_ds: rasterio.DatasetReader | None,
+    stride: int,
+    model_id: str,
+    input_path: str,
+) -> tuple[Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    emb_path = out_dir / f"{base_stem}_dino_stride{stride}_embeddings.npz"
+    np.savez_compressed(emb_path, embeddings=feat.astype(np.float32))
+
+    meta = {
+        "model_id": model_id,
+        "stride_px": int(stride),
+        "input_path": str(input_path),
+        "embedding_shape": list(feat.shape),
+        "dtype": "float32",
+        "normalized": "l2",
+    }
+
+    if ref_ds is not None and ref_ds.crs is not None:
+        transform_base = ref_ds.transform
+        transform_emb = transform_base * Affine.scale(stride, stride)
+        h, w = feat.shape[:2]
+        west, south, east, north = array_bounds(h, w, transform_emb)
+        meta["geo"] = {
+            "crs": str(ref_ds.crs),
+            "transform": list(transform_emb),
+            "transform_base": list(transform_base),
+            "bounds": {"west": west, "south": south, "east": east, "north": north},
+            "pixel_size": [transform_emb.a, transform_emb.e],
+        }
+
+    meta_path = emb_path.with_suffix(".json")
+    meta_path.write_text(json.dumps(meta, indent=2))
+    return emb_path, meta_path
 
 # ---------- DINO features ----------
 @torch.no_grad()
@@ -357,6 +398,14 @@ def main():
 
     # one DINO pass
     feat = dinov3_patch_features(rgb8, dino_model, processor, device, stride)  # (hf, wf, C), L2-normalized
+
+    base_stem = Path(input_path).stem
+    if base_stem.endswith("_rgb8"):
+        base_stem = base_stem[:-5]
+    emb_dir = map_dir / "embeddings"
+    emb_path, meta_path = save_dino_embeddings(emb_dir, base_stem, feat, ref_ds, stride, model_id, input_path)
+    print("[ok] wrote", emb_path)
+    print("[ok] wrote", meta_path)
 
     written_paths = []
     palette_cache = {}

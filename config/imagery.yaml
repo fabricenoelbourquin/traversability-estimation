@@ -1,5 +1,5 @@
 fetch:
-  chip_px: 1024
+  chip_px: 1024        # 1024 * 0.25 m = 256 m
   gsd_m: 0.25
   wms:
     url: "https://wms.geo.admin.ch/"
