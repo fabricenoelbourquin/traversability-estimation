@@ -29,7 +29,13 @@ from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
 from utils.synced import resolve_synced_parquet, infer_hz_from_path
 from utils.filtering import load_metrics_config
-from utils.geo import find_lat_lon_cols, format_dem_scale_label, discover_dem_path, world_to_rowcol
+from utils.geo import (
+    find_lat_lon_cols,
+    format_dem_scale_label,
+    discover_dem_path,
+    world_to_rowcol,
+    parse_dem_pitch_roll_cfg,
+)
 from utils.quaternion import euler_zyx_from_wxyz, normalize_quat_arrays, yaw_from_wxyz, get_quaternion_block
 
 
@@ -602,40 +608,16 @@ def main():
     P = get_paths()
 
     metrics_cfg_full = load_metrics_config(Path(P["REPO_ROOT"]) / "config" / "metrics.yaml")
-    dem_pitch_roll_cfg = metrics_cfg_full.get("dem_pitch_roll")
-    if not isinstance(dem_pitch_roll_cfg, dict):
-        raise SystemExit("Missing or invalid 'dem_pitch_roll' in config/metrics.yaml.")
-    # Get DEM pitch/roll config and check for validity
-    dem_smooth_scales_m_raw = dem_pitch_roll_cfg.get("smooth_scales_m")
-    if not isinstance(dem_smooth_scales_m_raw, (list, tuple)):
-        raise SystemExit("'dem_pitch_roll.smooth_scales_m' must be a list of meters-based scales.")
-    dem_smooth_scales_m = []
-    for val in dem_smooth_scales_m_raw:
-        try:
-            scale_m = float(val)
-        except Exception:
-            continue
-        if np.isfinite(scale_m) and scale_m > 0.0:
-            dem_smooth_scales_m.append(scale_m)
-    if not dem_smooth_scales_m:
-        raise SystemExit("'dem_pitch_roll.smooth_scales_m' must contain positive finite values.")
-
-    if "smooth_window" not in dem_pitch_roll_cfg:
-        raise SystemExit("Missing 'dem_pitch_roll.smooth_window' in metrics config.")
-    dem_smooth_window = int(dem_pitch_roll_cfg.get("smooth_window"))
-    if dem_smooth_window < 1:
-        raise SystemExit("'dem_pitch_roll.smooth_window' must be >= 1.")
-
-    if "mad_z_thresh" not in dem_pitch_roll_cfg:
-        raise SystemExit("Missing 'dem_pitch_roll.mad_z_thresh' in metrics config.")
-    dem_mad_z_thresh = float(dem_pitch_roll_cfg.get("mad_z_thresh"))
-    if not np.isfinite(dem_mad_z_thresh) or dem_mad_z_thresh <= 0.0:
-        raise SystemExit("'dem_pitch_roll.mad_z_thresh' must be > 0.")
-    dem_rate_hampel_filter = bool(dem_pitch_roll_cfg.get("rate_hampel_filter", False))
-    dem_rate_hampel_max_rate = float(dem_pitch_roll_cfg.get("rate_hampel_max_rate", np.nan))
-    dem_rate_hampel_window = int(dem_pitch_roll_cfg.get("rate_hampel_window", 0))
-    dem_rate_hampel_z = float(dem_pitch_roll_cfg.get("rate_hampel_z", np.nan))
-    dem_value_gauss_sigma = float(dem_pitch_roll_cfg.get("value_gauss_sigma", np.nan))
+    dem_pitch_roll_cfg = parse_dem_pitch_roll_cfg(metrics_cfg_full)
+    dem_smooth_scales_m = dem_pitch_roll_cfg["smooth_scales_m"]
+    dem_filter_params = dem_pitch_roll_cfg["filter_params"]
+    dem_smooth_window = int(dem_filter_params["smooth_window"])
+    dem_mad_z_thresh = float(dem_filter_params["mad_z_thresh"])
+    dem_rate_hampel_filter = bool(dem_filter_params.get("rate_hampel_filter", False))
+    dem_rate_hampel_max_rate = float(dem_filter_params.get("rate_hampel_max_rate", np.nan))
+    dem_rate_hampel_window = int(dem_filter_params.get("rate_hampel_window", 0))
+    dem_rate_hampel_z = float(dem_filter_params.get("rate_hampel_z", np.nan))
+    dem_value_gauss_sigma = float(dem_filter_params.get("value_gauss_sigma", np.nan))
     robot_cfg_full = (metrics_cfg_full.get("robot") or {})
     params_cfg_full = (metrics_cfg_full.get("params") or {})
     cot_cfg = {
