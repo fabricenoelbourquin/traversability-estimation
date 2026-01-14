@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -37,63 +36,18 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from utils.paths import get_paths  # noqa: E402
+from utils.missions import MissionSpec  # noqa: E402
 
 
 DEFAULT_PATCH_SIZE_M: float = 5.0
 DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_analysis_robot_data" / "terrain_cot"
+DEFAULT_TERRAIN_CONFIG = REPO_ROOT / "config" / "terrain_missions.yaml"
 
 PITCH_COL = "pitch_deg_mean"
 COT_P95_COL = "cot_patch_p95"
 MISSION_DISPLAY_COL = "mission_display"
 MISSION_ID_COL = "mission_id"
 TIME_COL_CANDIDATES = ("center_t", "t_start", "t_end")
-
-
-@dataclass(frozen=True)
-class MissionSpec:
-    mission: str
-    ranges_s: tuple[tuple[float, float | None], ...] | None = None
-
-
-TERRAIN_MISSIONS: dict[str, list[MissionSpec]] = {
-    "asphalt": [
-        MissionSpec("ETH-1"),
-        MissionSpec("GRI-1", ((0.0, 210.0), (250.0, None))),
-        MissionSpec("LEE-1"),
-        MissionSpec("LEICA-1"),
-        MissionSpec("KÄB-3", ((355.0, 425.0),)),
-        MissionSpec("SRB-1"),
-        MissionSpec("SRB-2"),
-        MissionSpec("SRB-3"),
-        MissionSpec("ARC-5", ((0.0, 170.0), (215.0, None))),
-    ],
-    "gravel": [
-        MissionSpec("KÄB-3", ((10.0, 345.0),)),
-        MissionSpec("TRIM-1", ((0.0, 350.0),)),
-        MissionSpec("ARC-5", ((175.0, 200.0),)),
-        MissionSpec("ALB-2", ((0.0, 40.0),)),
-        MissionSpec("HÖB-1", ((180.0, 220.0)))
-    ],
-    "forest": [
-        MissionSpec("ALB-1"),
-        MissionSpec("ALB-2", ((50.0, 440),)),
-        MissionSpec("ALB-3", ((0.0, 160.0),)),
-        MissionSpec("LMB-2"),
-        MissionSpec("HÖB-1", ((0.0, 180.0), (230.0, None))),
-        MissionSpec("HÖB-2"),
-        MissionSpec("KÄB-1"),
-        MissionSpec("KÄB-2"),
-    ],
-    "snow": [MissionSpec("SNOW-3")],
-    "ice": [MissionSpec("ICE-1")],
-    "hiking trail": [
-        MissionSpec("CYN-1", ((90.0, 300.0),)),
-        MissionSpec("CYN-2"),
-        MissionSpec("PIL-2"),
-        MissionSpec("ROOT-1"),
-        MissionSpec("LMB-1"),
-    ],
-}
 
 
 def _patch_label(patch_size_m: float | None) -> str:
@@ -128,6 +82,56 @@ def _resolve_dataset_path(dataset_arg: Path | None, patch_size_m: float | None) 
             dataset_path = dataset_path.with_suffix(".h5")
         return Path(get_paths()["DATASETS"]) / dataset_path.name
     return dataset_path
+
+
+def _parse_ranges(ranges_raw) -> tuple[tuple[float, float | None], ...] | None:
+    if not ranges_raw:
+        return None
+    if not isinstance(ranges_raw, list):
+        raise SystemExit("ranges_s must be a list of [start, end] pairs.")
+    parsed: list[tuple[float, float | None]] = []
+    for pair in ranges_raw:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise SystemExit("ranges_s entries must be [start, end] pairs.")
+        start = float(pair[0])
+        end = None if pair[1] is None else float(pair[1])
+        parsed.append((start, end))
+    return tuple(parsed)
+
+
+def _load_terrain_missions(config_path: Path) -> dict[str, list[MissionSpec]]:
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        raise SystemExit("pyyaml is required to read terrain config (pip install pyyaml).") from exc
+    if not config_path.exists():
+        raise SystemExit(f"Terrain config not found: {config_path}")
+    raw = yaml.safe_load(config_path.read_text()) or {}
+    terrains_raw = raw.get("terrains", raw)
+    if not isinstance(terrains_raw, dict):
+        raise SystemExit("Terrain config must map terrain names to mission lists.")
+    out: dict[str, list[MissionSpec]] = {}
+    for terrain, entries in terrains_raw.items():
+        if entries is None:
+            out[str(terrain)] = []
+            continue
+        if not isinstance(entries, list):
+            raise SystemExit(f"Terrain '{terrain}' must map to a list of missions.")
+        specs: list[MissionSpec] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                specs.append(MissionSpec(entry))
+                continue
+            if isinstance(entry, dict):
+                mission = entry.get("mission")
+                if not mission:
+                    raise SystemExit(f"Terrain '{terrain}' has a mission entry without 'mission'.")
+                ranges = _parse_ranges(entry.get("ranges_s"))
+                specs.append(MissionSpec(str(mission), ranges))
+                continue
+            raise SystemExit(f"Terrain '{terrain}' mission entries must be strings or dicts.")
+        out[str(terrain)] = specs
+    return out
 
 
 def _load_patch_groups(h5_path: Path, missions: list[str]) -> list[pd.DataFrame]:
@@ -270,24 +274,34 @@ def main() -> None:
         default=None,
         help="Output path for figure (default: reports/zz_patch_analysis_robot_data/terrain_cot/<patch>/terrain_cot_corrected.png).",
     )
+    ap.add_argument(
+        "--terrain-config",
+        type=Path,
+        default=None,
+        help=f"Terrain mission config YAML (default: {DEFAULT_TERRAIN_CONFIG}).",
+    )
     args = ap.parse_args()
 
     dataset_path = _resolve_dataset_path(args.dataset, args.patch_size)
     patch_label = _patch_label(args.patch_size)
     default_out = DEFAULT_REPORT_DIR / patch_label / "terrain_cot_corrected.png"
+    terrain_cfg_path = args.terrain_config or DEFAULT_TERRAIN_CONFIG
+    terrain_missions = _load_terrain_missions(terrain_cfg_path)
+    if not terrain_missions:
+        raise SystemExit(f"No terrain missions found in {terrain_cfg_path}.")
 
-    mission_names = sorted({spec.mission for specs in TERRAIN_MISSIONS.values() for spec in specs})
+    mission_names = sorted({spec.mission for specs in terrain_missions.values() for spec in specs})
     dfs = _load_patch_groups(dataset_path, mission_names)
     if not dfs:
         raise SystemExit("No missions found in dataset (after filtering).")
 
     df_all = pd.concat(dfs, ignore_index=True)
-    need_time_ranges = any(spec.ranges_s for specs in TERRAIN_MISSIONS.values() for spec in specs)
+    need_time_ranges = any(spec.ranges_s for specs in terrain_missions.values() for spec in specs)
     time_col = _select_time_col(df_all) if need_time_ranges else ""
 
     terrain_frames: dict[str, list[pd.DataFrame]] = {}
     selected_frames: list[pd.DataFrame] = []
-    for terrain, specs in TERRAIN_MISSIONS.items():
+    for terrain, specs in terrain_missions.items():
         frames: list[pd.DataFrame] = []
         for spec in specs:
             df_m = df_all[_mission_mask(df_all, spec.mission)]
@@ -316,7 +330,7 @@ def main() -> None:
     print(f"[info] Quad fit (no outliers) coeffs: {coeffs}")
 
     stats_rows = []
-    for terrain in TERRAIN_MISSIONS.keys():
+    for terrain in terrain_missions.keys():
         frames = terrain_frames.get(terrain, [])
         if not frames:
             stats_rows.append({"terrain": terrain, "n": 0, "mean_cot_corr": np.nan, "std_cot_corr": np.nan})
