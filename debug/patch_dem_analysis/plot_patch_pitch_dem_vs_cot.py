@@ -41,6 +41,8 @@ DEFAULT_REPORT_DIR = Path(get_paths()["REPO_ROOT"]) / "reports" / "zz_patch_anal
 
 COT_COL = "cot_patch"
 COT_P95_COL = "cot_patch_p95"
+OUTLIER_PCT_LOW = 2.0
+OUTLIER_PCT_HIGH = 98.0
 
 
 def _patch_label(patch_size_m: float | None) -> str:
@@ -187,13 +189,90 @@ def _fit_poly(x: np.ndarray, y: np.ndarray, deg: int) -> np.ndarray | None:
     return coeffs.astype(float)
 
 
-def _remove_outliers(x: np.ndarray, y: np.ndarray, pct_low: float = 2.0, pct_high: float = 98.0) -> tuple[np.ndarray, np.ndarray]:
+def _outlier_mask(
+    x: np.ndarray, y: np.ndarray, pct_low: float = OUTLIER_PCT_LOW, pct_high: float = OUTLIER_PCT_HIGH
+) -> tuple[np.ndarray, dict[str, float | None]]:
     if x.size == 0 or y.size == 0:
-        return x, y
+        return np.ones_like(x, dtype=bool), {
+            "pct_low": pct_low,
+            "pct_high": pct_high,
+            "x_low": None,
+            "x_high": None,
+            "y_low": None,
+            "y_high": None,
+        }
     x_low, x_high = np.percentile(x, [pct_low, pct_high])
     y_low, y_high = np.percentile(y, [pct_low, pct_high])
     mask = (x >= x_low) & (x <= x_high) & (y >= y_low) & (y <= y_high)
-    return x[mask], y[mask]
+    return mask, {
+        "pct_low": float(pct_low),
+        "pct_high": float(pct_high),
+        "x_low": float(x_low),
+        "x_high": float(x_high),
+        "y_low": float(y_low),
+        "y_high": float(y_high),
+    }
+
+
+def _coeffs_payload(coeffs: np.ndarray | None) -> dict[str, float | list[float] | int | str] | None:
+    if coeffs is None:
+        return None
+    coeff_list = [float(c) for c in coeffs.tolist()]
+    payload: dict[str, float | list[float] | int | str] = {
+        "degree": int(len(coeff_list) - 1),
+        "coefficients": coeff_list,
+        "order": "highest_degree_first",
+    }
+    if len(coeff_list) == 3:
+        payload["quadratic"] = {"a": coeff_list[0], "b": coeff_list[1], "c": coeff_list[2]}
+    return payload
+
+
+def _residual_metrics(x: np.ndarray, y: np.ndarray, coeffs: np.ndarray | None) -> dict[str, float | int | None]:
+    metrics: dict[str, float | int | None] = {
+        "count": int(x.size),
+        "rmse": None,
+        "mae": None,
+        "median_abs_error": None,
+        "bias": None,
+        "residual_variance": None,
+        "residual_std": None,
+        "r2": None,
+        "y_mean": None,
+        "y_variance": None,
+        "y_std": None,
+    }
+    if coeffs is None or x.size == 0:
+        return metrics
+    preds = np.polyval(coeffs, x)
+    residuals = y - preds
+    metrics.update(
+        {
+            "rmse": float(np.sqrt(np.mean(residuals**2))),
+            "mae": float(np.mean(np.abs(residuals))),
+            "median_abs_error": float(np.median(np.abs(residuals))),
+            "bias": float(np.mean(residuals)),
+            "residual_variance": float(np.var(residuals)),
+            "residual_std": float(np.std(residuals)),
+            "y_mean": float(np.mean(y)),
+            "y_variance": float(np.var(y)),
+            "y_std": float(np.std(y)),
+        }
+    )
+    ss_res = float(np.sum(residuals**2))
+    y_mean = float(metrics["y_mean"]) if metrics["y_mean"] is not None else 0.0
+    ss_tot = float(np.sum((y - y_mean) ** 2))
+    metrics["r2"] = None if ss_tot == 0.0 else 1.0 - ss_res / ss_tot
+    return metrics
+
+
+def _write_metrics(out_path: Path, payload: dict) -> Path:
+    metrics_path = out_path.with_name(f"{out_path.stem}_fit_metrics.json")
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[ok] wrote {metrics_path}")
+    return metrics_path
 
 
 def main() -> None:
@@ -251,6 +330,7 @@ def main() -> None:
     cot_col = COT_P95_COL if args.p95 else COT_COL
     default_name = "patch_pitch_dem_vs_cot_p95.png" if args.p95 else "patch_pitch_dem_vs_cot.png"
     default_out = DEFAULT_REPORT_DIR / patch_label / default_name
+    base_out = args.output if args.output is not None else default_out
 
     groups = _load_patch_groups(dataset_path, args.missions)
     if not groups:
@@ -280,9 +360,32 @@ def main() -> None:
         raise SystemExit(f"No finite DEM pitch/{cot_col} data to plot.")
 
     fit_all = _fit_poly(pitch_deg, cot_vals, deg=2)
-    pitch_nr, cot_nr = _remove_outliers(pitch_deg, cot_vals)
+    outlier_mask, outlier_bounds = _outlier_mask(pitch_deg, cot_vals)
+    pitch_nr, cot_nr = pitch_deg[outlier_mask], cot_vals[outlier_mask]
     fit_no_outliers = _fit_poly(pitch_nr, cot_nr, deg=2)
     x_plot = np.linspace(np.min(pitch_deg), np.max(pitch_deg), 200) if pitch_deg.size else np.array([])
+
+    metrics_payload = {
+        "dataset_path": str(dataset_path),
+        "missions": args.missions,
+        "patch_size_m": float(args.patch_size) if args.patch_size is not None else DEFAULT_PATCH_SIZE_M,
+        "cot_col": cot_col,
+        "pitch_col": pitch_col,
+        "dem_scale_m": float(scale_m),
+        "dem_scale_label": scale_label,
+        "points": {
+            "total": int(pitch_deg.size),
+            "inliers": int(pitch_nr.size),
+            "outliers": int(pitch_deg.size - pitch_nr.size),
+        },
+        "outlier_filter": outlier_bounds,
+        "fit_no_outliers": _coeffs_payload(fit_no_outliers),
+        "fit_all": _coeffs_payload(fit_all),
+        "metrics_vs_no_outliers_fit": {
+            "all_points": _residual_metrics(pitch_deg, cot_vals, fit_no_outliers),
+            "inlier_points": _residual_metrics(pitch_nr, cot_nr, fit_no_outliers),
+        },
+    }
 
     def _plot(y_range: tuple[float, float] | None, suffix: str) -> Path:
         fig, ax = plt.subplots(figsize=(7.5, 5.5))
@@ -311,7 +414,6 @@ def main() -> None:
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
-        base_out = args.output if args.output is not None else default_out
         out_path = base_out if suffix == "" else base_out.with_name(f"{base_out.stem}{suffix}{base_out.suffix}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=200)
@@ -319,7 +421,8 @@ def main() -> None:
         print(f"[ok] wrote {out_path}")
         return out_path
 
-    _plot(None, "")
+    out_path = _plot(None, "")
+    _write_metrics(out_path, metrics_payload)
     if args.y_range is not None:
         _plot((args.y_range[0], args.y_range[1]), "_restricted")
 
