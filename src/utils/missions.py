@@ -16,6 +16,11 @@ class MissionPaths:
     display: str
     maps: str
 
+@dataclass(frozen=True)
+class MissionSpec:
+    mission: str
+    ranges_s: tuple[tuple[float, float | None], ...] | None = None
+
 class MissionNotFound(KeyError):
     pass
 

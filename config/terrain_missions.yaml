@@ -1,0 +1,63 @@
+terrains:
+  asphalt:
+    - mission: ETH-1
+    - mission: GRI-1
+      ranges_s:
+        - [0.0, 210.0]
+        - [250.0, null]
+    - mission: LEE-1
+    - mission: LEICA-1
+    - mission: KÄB-3
+      ranges_s:
+        - [355.0, 425.0]
+    - mission: SRB-1
+    - mission: SRB-2
+    - mission: SRB-3
+    - mission: ARC-5
+      ranges_s:
+        - [0.0, 170.0]
+        - [215.0, null]
+  gravel:
+    - mission: KÄB-3
+      ranges_s:
+        - [10.0, 345.0]
+    - mission: TRIM-1
+      ranges_s:
+        - [0.0, 350.0]
+    - mission: ARC-5
+      ranges_s:
+        - [175.0, 200.0]
+    - mission: ALB-2
+      ranges_s:
+        - [0.0, 40.0]
+    - mission: HÖB-1
+      ranges_s:
+        - [180.0, 220.0]
+  forest:
+    - mission: ALB-1
+    - mission: ALB-2
+      ranges_s:
+        - [50.0, 440.0]
+    - mission: ALB-3
+      ranges_s:
+        - [0.0, 160.0]
+    - mission: LMB-2
+    - mission: HÖB-1
+      ranges_s:
+        - [0.0, 180.0]
+        - [230.0, null]
+    - mission: HÖB-2
+    - mission: KÄB-1
+    - mission: KÄB-2
+  snow:
+    - mission: SNOW-3
+  ice:
+    - mission: ICE-1
+  hiking trail:
+    - mission: CYN-1
+      ranges_s:
+        - [90.0, 300.0]
+    - mission: CYN-2
+    - mission: PIL-2
+    - mission: ROOT-1
+    - mission: LMB-1
