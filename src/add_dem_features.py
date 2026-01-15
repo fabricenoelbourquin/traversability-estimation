@@ -19,7 +19,7 @@ from pyproj import Transformer
 
 from utils.paths import get_paths
 from utils.cli import add_mission_arguments, add_hz_argument, resolve_mission_from_args
-from utils.filtering import build_dem_pitch_roll_chain, filter_signal
+from utils.filtering import build_dem_pitch_roll_chain, filter_signal, kalman_smooth_xy
 from utils.geo import (
     find_lat_lon_cols,
     discover_dem_path,
@@ -46,6 +46,10 @@ def compute_yaw_rad(df: pd.DataFrame) -> np.ndarray | None:
     return yaw_from_wxyz(*block)
 
 
+def wrap_pi(angle_rad: np.ndarray) -> np.ndarray:
+    return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Add DEM pitch/roll features to synced parquet.")
     add_mission_arguments(ap)
@@ -64,6 +68,8 @@ def main() -> None:
     scales_m = dem_cfg["smooth_scales_m"]
     filter_chain = build_dem_pitch_roll_chain(dem_cfg["filter_params"])
     dem_filters_cfg = {"dem_pitch_roll": {"chain": filter_chain}}
+    filters_cfg = metrics_cfg.get("filters", {})
+    gps_yaw_cfg = (metrics_cfg.get("dem_pitch_roll") or {}).get("gps_yaw", {})
 
     dataset_cfg = load_yaml(Path(args.dataset_config))
     input_cfg = dataset_cfg.get("inputs", {})
@@ -117,6 +123,53 @@ def main() -> None:
     filter_context = {"t_s": t}
 
     out = pd.DataFrame({"t": t})
+    gps_yaw_rad = None
+    gps_speed_mps = None
+    if gps_yaw_cfg is not None:
+        process_var = float(gps_yaw_cfg.get("process_var", 1.0))
+        meas_var = float(gps_yaw_cfg.get("meas_var", 1.0))
+        init_pos_var = float(gps_yaw_cfg.get("init_pos_var", 10.0))
+        init_vel_var = float(gps_yaw_cfg.get("init_vel_var", 1.0))
+        min_speed_mps = float(gps_yaw_cfg.get("min_speed_mps", 0.05))
+
+        _east_s, _north_s, vel_e, vel_n = kalman_smooth_xy(
+            t,
+            east,
+            north,
+            process_var=process_var,
+            meas_var=meas_var,
+            init_pos_var=init_pos_var,
+            init_vel_var=init_vel_var,
+        )
+        gps_speed = np.hypot(vel_e, vel_n)
+        gps_speed_filt = filter_signal(
+            gps_speed,
+            "dem_pitch_roll_gps_speed",
+            filters_cfg=filters_cfg,
+            context=filter_context,
+        )
+        gps_speed_mps = gps_speed_filt if gps_speed_filt is not None else gps_speed
+        gps_yaw = np.arctan2(vel_n, vel_e)
+        moving = gps_speed >= min_speed_mps
+        gps_yaw[~moving] = np.nan
+        if np.isfinite(gps_yaw).any():
+            yaw_filled = pd.Series(gps_yaw).ffill().bfill().to_numpy(dtype=np.float64)
+            yaw_unwrapped = np.unwrap(yaw_filled)
+            yaw_deg = np.rad2deg(yaw_unwrapped)
+            yaw_deg_filt = filter_signal(
+                yaw_deg,
+                "dem_pitch_roll_gps_yaw",
+                filters_cfg=filters_cfg,
+                context=filter_context,
+            )
+            yaw_deg_filt = yaw_deg_filt if yaw_deg_filt is not None else yaw_deg
+            gps_yaw_rad = wrap_pi(np.deg2rad(yaw_deg_filt))
+        else:
+            gps_yaw_rad = np.full_like(gps_yaw, np.nan, dtype=np.float64)
+
+        out["gps_speed_mps"] = gps_speed_mps
+        out["gps_yaw_rad"] = gps_yaw_rad
+        out["gps_yaw_deg"] = np.rad2deg(gps_yaw_rad)
     for scale_m in scales_m:
         sigma_px = float(scale_m / res_m)
         if not np.isfinite(sigma_px) or sigma_px <= 0.0:
@@ -148,6 +201,27 @@ def main() -> None:
         label = format_dem_scale_label(scale_m)
         out[f"dem_pitch_{label}_deg"] = pitch_deg
         out[f"dem_roll_{label}_deg"] = roll_deg
+        if gps_yaw_rad is not None:
+            cos_yaw_gps = np.cos(gps_yaw_rad)
+            sin_yaw_gps = np.sin(gps_yaw_rad)
+            s_parallel_gps = g_e * cos_yaw_gps + g_n * sin_yaw_gps
+            s_perp_gps = -g_e * sin_yaw_gps + g_n * cos_yaw_gps
+            pitch_deg_gps = np.rad2deg(np.arctan(s_parallel_gps))
+            roll_deg_gps = np.rad2deg(np.arctan(s_perp_gps))
+            pitch_deg_gps = filter_signal(
+                pitch_deg_gps,
+                "dem_pitch_roll",
+                filters_cfg=dem_filters_cfg,
+                context=filter_context,
+            )
+            roll_deg_gps = filter_signal(
+                roll_deg_gps,
+                "dem_pitch_roll",
+                filters_cfg=dem_filters_cfg,
+                context=filter_context,
+            )
+            out[f"dem_pitch_{label}_deg_gps"] = pitch_deg_gps
+            out[f"dem_roll_{label}_deg_gps"] = roll_deg_gps
 
     # Merge to metrics or synced
     dem_cols = [c for c in out.columns if c != "t"]

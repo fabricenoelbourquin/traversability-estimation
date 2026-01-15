@@ -145,6 +145,115 @@ def gaussian_smooth_1d_nan(arr: np.ndarray, sigma: float, window: int | None = N
     return out.astype(np.float64)
 
 
+def kalman_cv_1d(
+    t_s: np.ndarray,
+    z: np.ndarray,
+    *,
+    process_var: float,
+    meas_var: float,
+    init_pos_var: float = 1.0,
+    init_vel_var: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Constant-velocity Kalman filter + RTS smoother for 1D position.
+    Returns (smoothed_position, smoothed_velocity).
+    """
+    t = np.asarray(t_s, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float64)
+    n = len(z)
+    if n == 0:
+        return z.copy(), z.copy()
+
+    q = float(process_var)
+    r = float(meas_var)
+    if not np.isfinite(q) or q < 0.0:
+        raise ValueError("process_var must be finite and >= 0.")
+    if not np.isfinite(r) or r <= 0.0:
+        raise ValueError("meas_var must be finite and > 0.")
+
+    x_f = np.zeros((n, 2), dtype=np.float64)
+    P_f = np.zeros((n, 2, 2), dtype=np.float64)
+    x_pred = np.zeros((n, 2), dtype=np.float64)
+    P_pred = np.zeros((n, 2, 2), dtype=np.float64)
+
+    x = np.array([z[0] if np.isfinite(z[0]) else 0.0, 0.0], dtype=np.float64)
+    P = np.diag([float(init_pos_var), float(init_vel_var)]).astype(np.float64)
+
+    for k in range(n):
+        if k > 0:
+            dt = t[k] - t[k - 1]
+            if not np.isfinite(dt) or dt <= 0.0:
+                dt = 0.0
+            F = np.array([[1.0, dt], [0.0, 1.0]], dtype=np.float64)
+            q11 = (dt**3) / 3.0
+            q12 = (dt**2) / 2.0
+            q22 = dt
+            Q = q * np.array([[q11, q12], [q12, q22]], dtype=np.float64)
+            x = F @ x
+            P = F @ P @ F.T + Q
+
+        x_pred[k] = x
+        P_pred[k] = P
+
+        if np.isfinite(z[k]):
+            y = z[k] - x[0]
+            S = P[0, 0] + r
+            if S <= 0.0 or not np.isfinite(S):
+                S = r
+            K = P[:, 0] / S
+            x = x + K * y
+            P = P - np.outer(K, P[0, :])
+
+        x_f[k] = x
+        P_f[k] = P
+
+    x_s = x_f.copy()
+    P_s = P_f.copy()
+    for k in range(n - 2, -1, -1):
+        dt = t[k + 1] - t[k]
+        if not np.isfinite(dt) or dt <= 0.0:
+            dt = 0.0
+        F = np.array([[1.0, dt], [0.0, 1.0]], dtype=np.float64)
+        P_pred_k1 = P_pred[k + 1]
+        if not np.all(np.isfinite(P_pred_k1)):
+            continue
+        C = P_f[k] @ F.T @ np.linalg.pinv(P_pred_k1)
+        x_s[k] = x_f[k] + C @ (x_s[k + 1] - x_pred[k + 1])
+        P_s[k] = P_f[k] + C @ (P_s[k + 1] - P_pred_k1) @ C.T
+
+    return x_s[:, 0], x_s[:, 1]
+
+
+def kalman_smooth_xy(
+    t_s: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    process_var: float,
+    meas_var: float,
+    init_pos_var: float = 1.0,
+    init_vel_var: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Run 1D constant-velocity Kalman smoothing on x and y separately."""
+    x_s, vx_s = kalman_cv_1d(
+        t_s,
+        x,
+        process_var=process_var,
+        meas_var=meas_var,
+        init_pos_var=init_pos_var,
+        init_vel_var=init_vel_var,
+    )
+    y_s, vy_s = kalman_cv_1d(
+        t_s,
+        y,
+        process_var=process_var,
+        meas_var=meas_var,
+        init_pos_var=init_pos_var,
+        init_vel_var=init_vel_var,
+    )
+    return x_s, y_s, vx_s, vy_s
+
+
 def rate_limit_angles(angle_deg: np.ndarray, t_s: np.ndarray, max_rate_deg_s: float) -> np.ndarray:
     """Clamp per-sample changes to a maximum rate (deg/s)."""
     out = angle_deg.astype(np.float64, copy=True)

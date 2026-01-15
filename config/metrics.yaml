@@ -41,6 +41,12 @@ dem_pitch_roll:
     rate_hampel_window: 101          # Hampel filter window (samples)
     rate_hampel_z: 2.0               # Hampel MAD z-threshold
     value_gauss_sigma: 10.0          # Gaussian smoothing sigma (samples) for values
+  gps_yaw:
+    process_var: 1.0                 # acceleration noise variance for Kalman CV model
+    meas_var: 1.0                    # GPS position variance (m^2)
+    init_pos_var: 10.0               # initial position variance
+    init_vel_var: 1.0                # initial velocity variance
+    min_speed_mps: 0.05              # below this, yaw samples are ignored before smoothing
 
 robot:
   mass_kg: 50.0      
@@ -121,3 +127,16 @@ filters:
     - type: moving_average
       window: 35
 
+  dem_pitch_roll_gps_yaw:
+    - type: moving_median
+      window: 5
+    - type: moving_average
+      window: 25
+    - type: rate_limit
+      max_rate_deg_s: 45.0
+
+  dem_pitch_roll_gps_speed:
+    - type: moving_median
+      window: 5
+    - type: moving_average
+      window: 15
