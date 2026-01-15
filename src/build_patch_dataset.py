@@ -452,6 +452,20 @@ def aggregate_robot_patch(df_patch: pd.DataFrame,
         else:
             out["speed_mean"] = out["speed_p5"] = out["speed_p95"] = np.nan
 
+    if "gps_speed_mps" in df_patch:
+        gps_speed = df_patch["gps_speed_mps"].to_numpy(dtype=float)
+        if gps_speed.size:
+            out["gps_speed_mps_mean"], out["gps_speed_mps_p5"], out["gps_speed_mps_p95"] = nan_stats(gps_speed)
+        else:
+            out["gps_speed_mps_mean"] = out["gps_speed_mps_p5"] = out["gps_speed_mps_p95"] = np.nan
+
+    if "gps_yaw_deg" in df_patch:
+        gps_yaw_deg = df_patch["gps_yaw_deg"].to_numpy(dtype=float)
+        if gps_yaw_deg.size:
+            out["gps_yaw_deg_mean"], out["gps_yaw_deg_p5"], out["gps_yaw_deg_p95"] = nan_stats(gps_yaw_deg)
+        else:
+            out["gps_yaw_deg_mean"] = out["gps_yaw_deg_p5"] = out["gps_yaw_deg_p95"] = np.nan
+
     if include_cmd_speed:
         if "v_cmd" in df_patch:
             vcmd = df_patch["v_cmd"].to_numpy(dtype=float)
